@@ -3,31 +3,68 @@
 // least-squares fit of one record to sampled states. The slicer uses these; the
 // flight library does not.
 //
-// A record is 19 numbers in this order (see RECORD_FIELDS): six elements at the
+// A record is 33 numbers in this order (see RECORD_FIELDS): six elements at the
 // record's mid epoch, a double-precision rate for the mean argument of
-// latitude, six single-precision rates, and six single-precision harmonic
-// coefficients. The model is the GPS broadcast ephemeris form (Keplerian
-// elements, linear rates, and corrections in twice the argument of latitude),
-// with the eccentricity carried as a vector so that circular orbits are regular.
+// latitude, six single-precision rates (the last of them the quadratic term
+// of the mean argument), a quadratic term that turns the eccentricity vector's
+// path into an arc, and 19 single-precision coefficients of displacements in kilometers (radial, along the track, and across it, each
+// with a cosine and a sine term in one, two, and three times the argument of
+// latitude, then a constant across the track). The idea is that of the GPS
+// broadcast ephemeris (Keplerian elements, linear rates, and harmonic
+// corrections), with the eccentricity carried as a vector so that circular
+// orbits are regular and with enough harmonics for an eccentric orbit.
 
-export const RECORD_BYTES = 104;
+export const RECORD_BYTES = 160;
 export const E_MAX = 0.9;
-export const KEPLER_ITERATIONS = 12;
+export const KEPLER_ITERATIONS = 6;
 export const RECORD_FIELDS = [
   'a', 'ex', 'ey', 'inc', 'node', 'lam', 'lamRate',
-  'aRate', 'exRate', 'eyRate', 'incRate', 'nodeRate', 'lamQuad',
-  'cuc', 'cus', 'crc', 'crs', 'cic', 'cis',
+  'aRate', 'exRate', 'eyRate', 'incRate', 'nodeRate', 'lamQuad', 'eQuad',
+  'rc1', 'rs1', 'rc2', 'rs2', 'rc3', 'rs3',
+  'tc1', 'ts1', 'tc2', 'ts2', 'tc3', 'ts3',
+  'wc1', 'ws1', 'wc2', 'ws2', 'wc3', 'ws3', 'w0',
 ];
 const NP = RECORD_FIELDS.length;
+
+// Kepler's equation in the offset G = F - lam, G = ka cos G + kb sin G, by the
+// fourth-order steps of kepler_offset in src/spice_lite.c (same operations in
+// the same order, with Math.sin and Math.cos in place of the library's own).
+// Returns the sine and cosine of G and the number of steps, or null where the
+// library gives up.
+export function keplerOffset(ka, kb) {
+  let g = 0, s = 0, c = 1, f2 = ka, f3 = kb;
+  for (let it = 1; it <= KEPLER_ITERATIONS; it++) {
+    const f = g - f2;
+    const f1 = 1 - f3;
+    let d = f / f1;
+    d = f / (f1 - 0.5 * d * f2);
+    d = f / (f1 - 0.5 * d * f2 + d * d * f3 * (1 / 6));
+    g -= d;
+    if (Math.abs(d) <= 1e-4) {
+      const h = 0.5 * d * d;
+      const t = d * (1 - h * (1 / 3));
+      return { sg: s * (1 - h) - c * t, cg: c * (1 - h) + s * t, steps: it };
+    }
+    if (!(Math.abs(g) <= 1e6)) return null;
+    s = Math.sin(g); c = Math.cos(g);
+    f2 = ka * c + kb * s;
+    f3 = kb * c - ka * s;
+  }
+  return null;
+}
 
 // State (km, km/s) at tau seconds from the record's mid epoch, or null where the
 // flight library answers unsupported. Same operations in the same order as
 // eval_orbit in src/spice_lite.c, with Math.sin and Math.cos in place of the
 // library's own.
 export function orbitEval(p, tau) {
+  const eq = p[13] * tau;
   const a = p[0] + p[7] * tau;
-  const ex = p[1] + p[8] * tau;
-  const ey = p[2] + p[9] * tau;
+  const ex = p[1] + (p[8] - eq * p[9]) * tau;
+  const ey = p[2] + (p[9] + eq * p[8]) * tau;
+  // the rates of the eccentricity vector at tau: its velocity has turned
+  const exd = p[8] - 2 * eq * p[9];
+  const eyd = p[9] + 2 * eq * p[8];
   const inc = p[3] + p[10] * tau;
   const node = p[4] + p[11] * tau;
   const lam = p[5] + (p[6] + p[12] * tau) * tau;
@@ -35,63 +72,63 @@ export function orbitEval(p, tau) {
   const e2 = ex * ex + ey * ey;
   if (!(a > 0) || !Number.isFinite(a) || !(e2 <= E_MAX * E_MAX) || !(Math.abs(lam) <= 1e6)) return null;
   const sl = Math.sin(lam), cl = Math.cos(lam);
-  // Kepler's equation in the offset G = F - lam: G = A cos G + B sin G.
-  const A = ex * sl - ey * cl, B = ex * cl + ey * sl;
-  let G = 0, sg = 0, cg = 1, done = false;
-  for (let it = 0; it < KEPLER_ITERATIONS && !done; it++) {
-    const d = (G - (A * cg + B * sg)) / (1 + (A * sg - B * cg));
-    G -= d;
-    if (Math.abs(d) <= 1e-8) {
-      [sg, cg] = [sg - cg * d, cg + sg * d];
-      done = true;
-    } else {
-      sg = Math.sin(G); cg = Math.cos(G);
-    }
-  }
-  if (!done) return null;
+  const k = keplerOffset(ex * sl - ey * cl, ex * cl + ey * sl);
+  if (!k) return null;
+  const { sg, cg } = k;
   const sf = sl * cg + cl * sg, cf = cl * cg - sl * sg;
   const rho = 1 - (ex * cf + ey * sf);
-  const fDot = (lamDot + (p[8] * sf - p[9] * cf)) / rho;
+  const fDot = (lamDot + (exd * sf - eyd * cf)) / rho;
   const w = Math.sqrt(1 - e2);
   const beta = 1 / (1 + w);
-  const betaDot = ((ex * p[8] + ey * p[9]) * beta * beta) / w;
+  const betaDot = ((ex * exd + ey * eyd) * beta * beta) / w;
   const D = ey * cf - ex * sf;
-  const dDot = (p[9] * cf - p[8] * sf) - (ey * sf + ex * cf) * fDot;
+  const dDot = (eyd * cf - exd * sf) - (ey * sf + ex * cf) * fDot;
   const xn = (cf - ex) - beta * ey * D;
   const yn = (sf - ey) + beta * ex * D;
-  const xnDot = (-sf * fDot - p[8]) - ((betaDot * ey + beta * p[9]) * D + beta * ey * dDot);
-  const ynDot = (cf * fDot - p[9]) + ((betaDot * ex + beta * p[8]) * D + beta * ex * dDot);
+  const xnDot = (-sf * fDot - exd) - ((betaDot * ey + beta * eyd) * D + beta * ey * dDot);
+  const ynDot = (cf * fDot - eyd) + ((betaDot * ex + beta * exd) * D + beta * ex * dDot);
   const r = a * rho;
-  const rDot = p[7] * rho - a * ((p[8] * cf + p[9] * sf) + D * fDot);
-  const cu = xn / rho, su = yn / rho;
+  const rDot = p[7] * rho - a * ((exd * cf + eyd * sf) + D * fDot);
+  const h = [xn / rho, yn / rho, 0, 0, 0, 0];
   const uDot = (xn * ynDot - yn * xnDot) / (rho * rho);
-  const c2 = cu * cu - su * su, s2 = 2 * cu * su;
-  const du = p[13] * c2 + p[14] * s2;
-  const dr = p[15] * c2 + p[16] * s2;
-  const di = p[17] * c2 + p[18] * s2;
-  const twoU = 2 * uDot;
-  const ucDot = uDot + twoU * (p[14] * c2 - p[13] * s2);
-  const rcDot = rDot + twoU * (p[16] * c2 - p[15] * s2);
-  const icDot = p[10] + twoU * (p[18] * c2 - p[17] * s2);
-  const sd = Math.sin(du), cd = Math.cos(du);
-  const cuc = cu * cd - su * sd, suc = su * cd + cu * sd;
-  const rc = r + dr;
-  const xp = rc * cuc, yp = rc * suc;
-  const xpDot = rcDot * cuc - yp * ucDot, ypDot = rcDot * suc + xp * ucDot;
-  const si = Math.sin(inc + di), ci = Math.cos(inc + di);
+  h[2] = h[0] * h[0] - h[1] * h[1];
+  h[3] = 2 * h[0] * h[1];
+  h[4] = h[2] * h[0] - h[3] * h[1];
+  h[5] = h[3] * h[0] + h[2] * h[1];
+  // one displacement: the sum of its three harmonics and its derivative in u
+  const harmonics = (o) => [
+    (p[o] * h[0] + p[o + 1] * h[1]) + (p[o + 2] * h[2] + p[o + 3] * h[3]) + (p[o + 4] * h[4] + p[o + 5] * h[5]),
+    (p[o + 1] * h[0] - p[o] * h[1]) + 2 * (p[o + 3] * h[2] - p[o + 2] * h[3]) + 3 * (p[o + 5] * h[4] - p[o + 4] * h[5]),
+  ];
+  const [dr, drU] = harmonics(14);
+  const [dt, dtU] = harmonics(20);
+  const [dw0, dwU] = harmonics(26);
+  const dw = dw0 + p[32];
+  if (!Number.isFinite(dr + dt + dw) || !(Math.abs(inc) <= 1e6) || !(Math.abs(node) <= 1e6)) return null;
+  const si = Math.sin(inc), ci = Math.cos(inc);
   const so = Math.sin(node), co = Math.cos(node);
-  const x = xp * co - yp * ci * so;
-  const y = xp * so + yp * ci * co;
-  const z = yp * si;
+  const rc = r + dr;
+  const rcDot = rDot + drU * uDot;
+  const dtDot = dtU * uDot;
+  const dwDot = dwU * uDot;
+  const xp = rc * h[0] - dt * h[1];
+  const yp = rc * h[1] + dt * h[0];
+  const xpDot = (rcDot * h[0] - dtDot * h[1]) - yp * uDot;
+  const ypDot = (rcDot * h[1] + dtDot * h[0]) + xp * uDot;
+  const q = yp * ci - dw * si;
+  const z = yp * si + dw * ci;
+  const qDot = (ypDot * ci - dwDot * si) - z * p[10];
+  const x = xp * co - q * so;
+  const y = xp * so + q * co;
   return [
     x, y, z,
-    (xpDot * co - ypDot * ci * so) + yp * si * so * icDot - y * p[11],
-    (xpDot * so + ypDot * ci * co) - yp * si * co * icDot + x * p[11],
-    ypDot * si + yp * ci * icDot,
+    (xpDot * co - qDot * so) - y * p[11],
+    (xpDot * so + qDot * co) + x * p[11],
+    (ypDot * si + dwDot * ci) + q * p[10],
   ];
 }
 
-// The stored form: fields 7 to 18 are single precision in the blob, so the
+// The stored form: fields 7 to 32 are single precision in the blob, so the
 // slicer rounds them before it measures anything.
 export function roundRecord(p) {
   const q = Float64Array.from(p);
@@ -179,7 +216,7 @@ function solve(M, b) {
 // record's mid epoch and s a state in km and km/s; gm is an estimate of the
 // center's gravitational parameter, used for the starting point and to weigh
 // velocity against position (the model itself carries no gm); half is half the
-// record length. Returns the 19 numbers, already rounded to their stored
+// record length. Returns the 33 numbers, already rounded to their stored
 // precision, or throws if the arc is not an ellipse this model accepts.
 export function fitRecord(samples, gm, half, { harmonics = true, iterations = 40 } = {}) {
   const osc = samples.map((q) => osculating(q.s, gm));
@@ -210,8 +247,8 @@ export function fitRecord(samples, gm, half, { harmonics = true, iterations = 40
   // Parameter scales: a change of one scale unit moves the position by about a
   // kilometer somewhere in the record.
   const scale = [1, 1 / a0, 1 / a0, 1 / a0, 1 / a0, 1 / a0, 1 / (a0 * h),
-    1 / h, 1 / (a0 * h), 1 / (a0 * h), 1 / (a0 * h), 1 / (a0 * h), 1 / (a0 * h * h),
-    1 / a0, 1 / a0, 1, 1, 1 / a0, 1 / a0];
+    1 / h, 1 / (a0 * h), 1 / (a0 * h), 1 / (a0 * h), 1 / (a0 * h), 1 / (a0 * h * h), 1 / h];
+  while (scale.length < NP) scale.push(1); // the displacements are already in kilometers
   const free = [];
   for (let j = 0; j < NP; j++) if (harmonics || j < 13) free.push(j);
   const residual = (q) => {
