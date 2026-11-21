@@ -1,8 +1,9 @@
-// Sub-points and occultation (lite_sub_point, lite_occulted), checked four ways:
+// Sub-points and occultation (lite_sub_point, lite_occulted), checked five ways:
 // against full CSPICE (subpnt_c with NEAR POINT/ELLIPSOID and occult_c with
 // ELLIPSOID shapes, both with no aberration correction), against the geometry
-// itself with no kernels at all, bit for bit between the WebAssembly and native
-// builds, and for status codes on requests that cannot be served.
+// itself with no kernels at all (for occultation, a brute-force model that
+// shares no method with the library), bit for bit between the WebAssembly and
+// native builds, and for status codes on requests that cannot be served.
 //
 // Two blobs carry the geometry. `eclipses` holds the Sun, Earth, and Moon across
 // the partial solar eclipse of 2004-10-14 and the total lunar eclipse of
@@ -12,6 +13,10 @@
 // lite_set_state. `saturn-soi` holds Saturn and Cassini's predicted trajectory
 // for the day of orbit insertion, when Saturn hid the Sun and the Earth from
 // the spacecraft.
+//
+// An occultation answer may differ from CSPICE's only where the blob's declared
+// errors leave the answer unsettled; `judge` below computes that from the
+// report, case by case, and nothing in it is fitted to the results.
 //
 // The CSPICE tests need the kernels: set SPICE_LITE_KERNELS to their directory.
 
@@ -132,18 +137,86 @@ async function truthOcculted(spice, target, by, observer, et) {
   const c = await spice.occult(n1, 'ELLIPSOID', f1, n2, 'ELLIPSOID', f2, 'NONE', String(observer), et);
   return c < 0 ? -c : 0;
 }
-// The library's own model, recomputed from CSPICE positions: spheres of the
-// mean radius. margin is how far the geometry is from the nearest change of
-// code; band is how far the true limbs of the two ellipsoids can lie from the
-// model's, since each ellipsoid lies between the spheres of its smallest and
-// largest radius.
-function sphereModel(f, b, radF, radB) {
-  const rf = mean(radF), rb = mean(radB);
-  const pf = dot(f, f) - rf * rf, pb = dot(b, b) - rb * rb;
-  const af = Math.atan2(rf, Math.sqrt(pf)), ab = Math.atan2(rb, Math.sqrt(pb));
-  const sep = Math.atan2(norm(cross(f, b)), dot(f, b));
-  const spread = (rad, d) => Math.asin(Math.min(1, Math.max(...rad) / d)) - Math.asin(Math.min(...rad) / d);
-  return { front: pf < pb, af, ab, sep, margin: Math.min(Math.abs(sep - (af + ab)), Math.abs(sep - Math.abs(af - ab))), band: spread(radF, norm(f)) + spread(radB, norm(b)) };
+// An independent model of what the observer sees, by brute force: the front
+// body's limb is traced point by point and each point's angle from the target's
+// center is compared with the target's angular radius, in the space where the
+// target is the unit sphere (a linear map keeps lines through the observer
+// straight, so who hides whom is unchanged). The library decides the same
+// question algebraically, so the two share no method. A shape is
+// { r: three semi-axes, rot: J2000 to body-fixed, row-major, or null for a sphere }.
+// f and b are the centers of the front body and the target relative to the
+// observer. Returns the code, or -1 when the observer is inside a body.
+function limbModel(f, b, F, T) {
+  const toUnit = (E, x) => (E.rot ? [0, 1, 2].map((k) => E.rot[3 * k] * x[0] + E.rot[3 * k + 1] * x[1] + E.rot[3 * k + 2] * x[2]) : x).map((v, k) => v / E.r[k]);
+  const fromUnit = (E, y) => { const t = y.map((v, k) => v * E.r[k]); return E.rot ? [0, 1, 2].map((k) => E.rot[k] * t[0] + E.rot[3 + k] * t[1] + E.rot[6 + k] * t[2]) : t; };
+  const c = toUnit(F, f), bt = toUnit(T, b), t = toUnit(F, b);
+  const n2 = dot(c, c), m2 = dot(bt, bt);
+  if (!(n2 > 1) || !(m2 > 1)) return -1;
+  if (!(n2 - 1 < dot(t, t) * (1 - 1 / m2))) return 0; // the front body's tangent is not the shorter one: it is not in front
+  let e1 = cross(c, [0.3, -0.5, 0.8]); e1 = e1.map((v) => v / norm(e1));
+  let e2 = cross(c, e1); e2 = e2.map((v) => v / norm(e2));
+  const [l0, l1, l2] = [c.map((v) => v * Math.sqrt((n2 - 1) / n2)), e1, e2].map((d) => toUnit(T, fromUnit(F, d)));
+  const angle = (phi) => {
+    const cp = Math.cos(phi), sp = Math.sin(phi);
+    const y = [l0[0] + cp * l1[0] + sp * l2[0], l0[1] + cp * l1[1] + sp * l2[1], l0[2] + cp * l1[2] + sp * l2[2]];
+    return Math.atan2(norm(cross(bt, y)), dot(bt, y));
+  };
+  const N = 240, step = (2 * Math.PI) / N, a = [];
+  for (let i = 0; i < N; i++) a.push(angle(i * step));
+  const refine = (lo, hi, sign) => { // golden section for the least (sign 1) or greatest (sign -1) angle in [lo, hi]
+    const G = 0.3819660112501051;
+    let x1 = lo + G * (hi - lo), x2 = hi - G * (hi - lo), f1 = sign * angle(x1), f2 = sign * angle(x2);
+    for (let i = 0; i < 44; i++) {
+      if (f1 < f2) { hi = x2; x2 = x1; f2 = f1; x1 = lo + G * (hi - lo); f1 = sign * angle(x1); } else { lo = x1; x1 = x2; f1 = f2; x2 = hi - G * (hi - lo); f2 = sign * angle(x2); }
+    }
+    return sign * Math.min(f1, f2);
+  };
+  let least = Infinity, greatest = -Infinity;
+  for (let i = 0; i < N; i++) {
+    const p = a[(i + N - 1) % N], q = a[(i + 1) % N];
+    if (a[i] <= p && a[i] <= q) least = Math.min(least, refine((i - 1) * step, (i + 1) * step, 1));
+    if (a[i] >= p && a[i] >= q) greatest = Math.max(greatest, refine((i - 1) * step, (i + 1) * step, -1));
+  }
+  const size = Math.asin(1 / Math.sqrt(m2));
+  if (least >= size) return dot(t, c) > Math.sqrt((n2 - 1) * dot(t, t)) ? 3 : 0; // the limb stays clear of the target: all of it hidden, or none
+  return greatest <= size ? 2 : 1;
+}
+const scaled = (E, factor) => ({ r: E.r.map((v) => v * factor), rot: E.rot });
+const sphereOf = (radii) => ({ r: [mean(radii), mean(radii), mean(radii)], rot: null });
+const isRound = (radii) => radii[0] === radii[1] && radii[1] === radii[2];
+// Whether the model's answer is unsettled by errors of size errF and errT (km,
+// any direction, any small turn) in where the two bodies' surfaces are: grow
+// and shrink each body by its error (scaling by 1 +- err / least radius covers
+// every surface within err of the nominal one) and see whether any of the four
+// combinations changes the code. Each code is monotonic in each body's extent,
+// so a code that survives all four survives everything in between.
+function unsettled(f, b, F, T, errF, errT, code = limbModel(f, b, F, T)) {
+  const eF = errF / Math.min(...F.r), eT = errT / Math.min(...T.r);
+  if (!(eF < 1) || !(eT < 1)) return true;
+  for (const sF of [1 - eF, 1 + eF]) for (const sT of [1 - eT, 1 + eT]) if (limbModel(f, b, scaled(F, sF), scaled(T, sT)) !== code) return true;
+  return false;
+}
+
+// A third opinion that shares nothing with the model above but the two frame
+// maps: 3,000 lines of sight to the target's limb, each tested against the front
+// body as a ray against a sphere in the space where that body is the unit
+// sphere. It tells none, partial, and full apart (it does not look for a
+// transit), to the resolution of its sampling.
+function raySample(f, b, F, T) {
+  const toUnit = (E, x) => (E.rot ? [0, 1, 2].map((k) => E.rot[3 * k] * x[0] + E.rot[3 * k + 1] * x[1] + E.rot[3 * k + 2] * x[2]) : x).map((v, k) => v / E.r[k]);
+  const fromUnit = (E, y) => { const t = y.map((v, k) => v * E.r[k]); return E.rot ? [0, 1, 2].map((k) => E.rot[k] * t[0] + E.rot[3 + k] * t[1] + E.rot[6 + k] * t[2]) : t; };
+  const c = toUnit(F, f), bt = toUnit(T, b), n2 = dot(c, c), m2 = dot(bt, bt);
+  const blocked = (x) => { const d = toUnit(F, x), dc = dot(d, c); return dc > 0 && dc * dc > dot(d, d) * (n2 - 1); };
+  let a1 = cross(bt, [0.3, -0.5, 0.8]); a1 = a1.map((v) => v / norm(a1));
+  let a2 = cross(bt, a1); a2 = a2.map((v) => v / norm(a2));
+  const reach = Math.sqrt((m2 - 1) / m2);
+  let hits = 0;
+  const N = 3000;
+  for (let i = 0; i < N; i++) {
+    const th = (2 * Math.PI * i) / N;
+    if (blocked(fromUnit(T, bt.map((v, k) => v * reach + Math.cos(th) * a1[k] + Math.sin(th) * a2[k])))) hits++;
+  }
+  return hits === N ? 3 : hits > 0 ? 1 : blocked(b) ? 3 : 0;
 }
 
 // ---- sub-points -------------------------------------------------------------
@@ -335,34 +408,57 @@ test('sub-point requests that cannot be served get status codes', async () => {
 
 // ---- occultation ------------------------------------------------------------
 
+// The shape CSPICE gives a body at et: its radii, and its orientation unless it is round.
+async function shapeAt(spice, radii, id, et) {
+  const r = radii(id);
+  return { r, rot: isRound(r) ? null : await spice.pxform('J2000', NAMES[id][1], et) };
+}
+// ARITH is the rounding both sides are allowed, as a fraction of the range.
+const ARITH = 1e-12;
+
 // Compares one answer with CSPICE and files it. A difference is allowed only
-// where the sphere model cannot be expected to agree: inside the band the
-// bodies' oblateness opens around each change of code, widened by what the
-// blob's position errors can turn the directions.
-async function judge(tally, spice, api, radii, target, by, observer, obsName, et, slackRad) {
+// where the blob's own declared errors leave the answer unsettled: err(id) is
+// how far (km) the library's idea of a body's surface may lie from CSPICE's,
+// from the position errors on the way to the observer and the orientation
+// error times the largest radius (and, for a body the library must treat as a
+// sphere, the spread of its radii). The brute-force model, on CSPICE's own
+// positions and orientations, says whether errors of that size can change the
+// code. The model must itself agree with CSPICE wherever the answer is settled.
+async function judge(tally, spice, api, radii, target, by, observer, obsName, et, err) {
   const got = api.occulted(target, by, observer, et);
   assert.equal(got.status, 0, `occulted ${target} by ${by} from ${observer}`);
   const want = await truthOcculted(spice, target, by, obsName, et);
   const f = vec((await spice.spkpos(NAMES[by][0], et, 'J2000', 'NONE', obsName)).position);
   const b = vec((await spice.spkpos(NAMES[target][0], et, 'J2000', 'NONE', obsName)).position);
-  const m = sphereModel(f, b, radii(by), radii(target));
-  const inBand = m.margin <= m.band + slackRad;
+  const F = await shapeAt(spice, radii, by, et), T = await shapeAt(spice, radii, target, et);
+  const model = limbModel(f, b, F, T);
+  const inBand = unsettled(f, b, F, T, err(by) + ARITH * norm(f), err(target) + ARITH * norm(b), model);
+  if (model !== want && !inBand && tally.arbiter) {
+    // CSPICE and the model disagree where the answer is settled: direct lines of
+    // sight decide, and the library must then stand with them.
+    assert.equal(raySample(f, b, F, T), model, `lines of sight side with CSPICE (${want}), not the model (${model}), for ${target} behind ${by} from ${obsName} at ${et}`);
+    assert.equal(got.code, model, `the library gives ${got.code} where the model and lines of sight give ${model} and CSPICE ${want}`);
+    tally.cspiceAlone++;
+    assert.ok(norm(f) < Math.max(...F.r), 'CSPICE stands alone only where the observer is inside the sphere of the front body\'s largest radius');
+    return { got: got.code, want };
+  }
   tally.n++; tally.codes[want]++;
   if (inBand) tally.inBand++;
+  assert.ok(model === want || inBand, `the brute-force model gives ${model} and CSPICE ${want} for ${target} behind ${by} from ${obsName} at ${et}, where the answer is settled (the library gives ${got.code})`);
   if (got.code !== want) {
-    assert.ok(inBand, `occulted ${target} by ${by} from ${obsName} at ${et}: got ${got.code}, CSPICE ${want}, ${m.margin} rad from a change of code, band ${m.band}`);
+    assert.ok(inBand, `occulted ${target} by ${by} from ${obsName} at ${et}: got ${got.code}, CSPICE ${want}, and the declared errors (${err(by)} and ${err(target)} km) do not unsettle the answer`);
     tally.differ++;
-    tally.worst = Math.max(tally.worst, m.margin);
   }
   return { got: got.code, want };
 }
-const newTally = () => ({ n: 0, inBand: 0, differ: 0, worst: 0, codes: [0, 0, 0, 0] });
-const say = (label, t) => console.log(`  ${label}: ${t.n} cases (CSPICE: ${t.codes[0]} none, ${t.codes[1]} partial, ${t.codes[2]} annular, ${t.codes[3]} full); ${t.n - t.differ} agree; ${t.differ} differ, all among the ${t.inBand} that lie inside the band where the sphere model may differ${t.differ ? `, at most ${t.worst.toExponential(2)} rad from a change of code` : ''}`);
+const newTally = (arbiter = false) => ({ n: 0, inBand: 0, differ: 0, codes: [0, 0, 0, 0], arbiter, cspiceAlone: 0 });
+const say = (label, t) => console.log(`  ${label}: ${t.n} cases (CSPICE: ${t.codes[0]} none, ${t.codes[1]} partial, ${t.codes[2]} annular, ${t.codes[3]} full); ${t.n - t.differ} agree; ${t.differ} differ, all among the ${t.inBand} whose answer the declared errors leave unsettled`);
+// The error allowance for a body: position errors between it and `from`, and its orientation error at its largest radius.
+const allowance = ({ chain, orientErr }, radii, from, unoriented = []) => (id) => chain(id, from) + (isRound(radii(id)) || unoriented.includes(id) ? 0 : orientErr(id) * Math.max(...radii(id)));
 
 test('the eclipses of October 2004 are classified as CSPICE classifies them', { skip }, async () => {
   await setup();
   const api = await load(ecl.blob);
-  const { chain } = boundsOf(ecl);
   const radii = (id) => radiiIn(ecl.blob, id);
   const [w0, w1] = ecl.report.windowEt;
   const solar = await spiceEcl.str2et('2004-10-14T03:00:00'), lunar = await spiceEcl.str2et('2004-10-28T03:10:00');
@@ -371,23 +467,54 @@ test('the eclipses of October 2004 are classified as CSPICE classifies them', { 
   for (let t = solar - 7200; t <= solar + 7200; t += 20) times.push(t);
   for (let t = lunar - 10800; t <= lunar + 10800; t += 20) times.push(t);
   const tally = newTally();
-  const slack = (2 * (chain(10, 399) + chain(301, 399))) / 3.5e5 + 1e-12;
   for (const [target, by, observer] of [[301, 399, 10], [399, 301, 10], [10, 399, 301], [10, 301, 399], [301, 10, 399], [399, 10, 301]]) {
+    const err = allowance(boundsOf(ecl), radii, observer);
     const seen = new Set();
-    for (const et of times) seen.add((await judge(tally, spiceEcl, api, radii, target, by, observer, String(observer), et, slack)).want);
+    for (const et of times) seen.add((await judge(tally, spiceEcl, api, radii, target, by, observer, String(observer), et, err)).want);
     if (target === 301 && observer === 10) assert.deepEqual([...seen].sort(), [0, 1, 3], 'from the Sun, the Earth hides the Moon partly and then fully on October 28');
     if (target === 399 && observer === 10) assert.deepEqual([...seen].sort(), [0, 1], 'from the Sun, the Moon crosses the limb of the Earth on October 14');
     if (target === 10 && observer === 301) assert.deepEqual([...seen].sort(), [0, 1, 3], 'from the Moon, the Earth hides the Sun on October 28');
     if (by === 10) assert.deepEqual([...seen], [0], 'the Sun is never in front');
   }
   say('natural observers', tally);
+  assert.ok(tally.inBand <= 0.01 * tally.n, 'the unsettled band is a small part of the cases');
 });
 
-test('near-limb geometry from a placed spacecraft: the sphere model agrees with CSPICE outside the band the bodies\' flattening opens', { skip }, async () => {
+// Where to put a spacecraft so that the geometry sits at, beside, and between
+// the changes of code. The spacecraft is D from the front body, an angle phi
+// off the line from the back body through the front one (phi = 0 puts the two
+// centers in line); the changes of code along phi are found with the
+// brute-force model, by a scan and then bisection.
+function placements(pf, pb, F, T, D, hint) {
+  const axis = sub(pf, pb), u = axis.map((v) => v / norm(axis));
+  let w = cross(u, [0.3, -0.5, 0.8]); w = w.map((v) => v / norm(w));
+  const at = (phi) => pf.map((v, k) => v + D * (Math.cos(phi) * u[k] + Math.sin(phi) * w[k]));
+  const code = (phi) => { const o = at(phi); return limbModel(sub(pf, o), sub(pb, o), F, T); };
+  const bisect = (lo, hi) => { const c = code(lo); for (let i = 0; i < 80; i++) { const mid = 0.5 * (lo + hi); if (code(mid) === c) lo = mid; else hi = mid; } return lo; };
+  let changes = [];
+  // the changes found for an earlier time are close: look around each first
+  if (hint) for (const h of hint) if (code(h * 0.99) !== code(h * 1.01)) changes.push(bisect(h * 0.99, h * 1.01));
+  if (!hint || changes.length !== hint.length) {
+    changes = [];
+    let prev = 0, cPrev = code(0);
+    for (let i = 0; i <= 420; i++) {
+      const phi = 1e-9 * 1.5e9 ** (i / 420), c = code(phi);
+      if (c !== cPrev) changes.push(bisect(prev, phi));
+      prev = phi; cPrev = c;
+    }
+  }
+  const list = [0];
+  changes.forEach((c, i) => list.push(0.5 * ((changes[i - 1] ?? 0) + c)));
+  if (changes.length) list.push(Math.min(1.5, 2 * changes[changes.length - 1]));
+  for (const rel of [1e-9, 1e-7, 1e-5, 1e-3, 3e-2, 0.3]) for (const c of changes) list.push(c * (1 - rel), c * (1 + rel));
+  return { changes, positions: list.map(at) };
+}
+
+test('near-limb geometry from a placed spacecraft: every code, a hair to either side of each change, for round, oblate, and triaxial bodies', { skip }, async () => {
   await setup();
   const api = await load(ecl.blob);
-  const { chain } = boundsOf(ecl);
   const radii = (id) => radiiIn(ecl.blob, id);
+  const err = allowance(boundsOf(ecl), radii, 0); // the spacecraft is placed relative to the barycenter
   const [w0] = ecl.report.windowEt;
   const round = newTally(), oblate = newTally();
   let slot = 0;
@@ -399,79 +526,172 @@ test('near-limb geometry from a placed spacecraft: the sphere model agrees with 
     [301, 399, [2, 20, 100, 1000]],              // the Moon over the Earth: partial or annular
     [STANDIN, 10, [3, 100, 1e4, 1e6]],           // the triaxial stand-in over the Sun
     [STANDIN, 399, [5, 1e3, 1e6]],
+    [399, STANDIN, [1.2, 3]],                    // the Earth over the stand-in: two bodies that are not round
   ];
   for (const [front, back, distances] of pairs) {
-    const isRound = [front, back].every((id) => new Set(radii(id)).size === 1);
-    const tally = isRound ? round : oblate;
+    const tally = isRound(radii(front)) && isRound(radii(back)) ? round : oblate;
     const times = [], positions = [];
-    // Where to put the spacecraft, given the two angles at which the sphere
-    // model changes code: on the line of centers, a hair to either side of each
-    // change, and in the open between and beyond them.
-    const picks = [() => 0, (i, o) => 0.5 * i, (i, o) => 0.5 * (i + o), (i, o) => 2 * o];
-    for (const rel of [1e-9, 1e-7, 1e-5, 1e-3, 3e-2, 0.3]) {
-      picks.push((i, o) => i * (1 - rel), (i, o) => i * (1 + rel), (i, o) => o * (1 - rel), (i, o) => o * (1 + rel));
-    }
     for (const dist of distances) {
       const D = dist * mean(radii(front));
-      for (const pick of picks) {
+      // One time per placement, since each is a state in the spacecraft's kernel.
+      // The changes of code are found afresh at each time: the bodies move and turn.
+      let hint = null;
+      for (let n = 0; ; n++) {
         const et = w0 + 3000 + 977 * slot++;
         const pf = vec((await spiceEcl.spkpos(NAMES[front][0], et, 'J2000', 'NONE', '0')).position);
         const pb = vec((await spiceEcl.spkpos(NAMES[back][0], et, 'J2000', 'NONE', '0')).position);
-        const axis = sub(pf, pb), len = norm(axis), u = axis.map((v) => v / len);
-        let w = cross(u, [0.3, -0.5, 0.8]); w = w.map((v) => v / norm(w));
-        // The spacecraft sits D from the front body, an angle phi off the line from
-        // the back body through the front one; phi = 0 puts the two centers in line.
-        const at = (phi) => pf.map((v, k) => v + D * (Math.cos(phi) * u[k] + Math.sin(phi) * w[k]));
-        const model = (phi) => { const o = at(phi); return sphereModel(sub(pf, o), sub(pb, o), radii(front), radii(back)); };
-        const solve = (g) => { // the phi at which g changes sign, by bisection
-          let lo = 0, hi = 1e-7;
-          while (g(hi) < 0 && hi < 1.5) hi *= 2;
-          for (let i = 0; i < 100; i++) { const mid = 0.5 * (lo + hi); if (g(mid) < 0) lo = mid; else hi = mid; }
-          return lo;
-        };
-        const inner = solve((phi) => { const m = model(phi); return m.sep - Math.abs(m.af - m.ab); });
-        const outer = solve((phi) => { const m = model(phi); return m.sep - (m.af + m.ab); });
+        const p = placements(pf, pb, await shapeAt(spiceEcl, radii, front, et), await shapeAt(spiceEcl, radii, back, et), D, hint);
+        hint = p.changes;
+        if (n >= p.positions.length) break;
         times.push(et);
-        positions.push(at(pick(inner, outer)));
+        positions.push(p.positions[n]);
       }
     }
     const sc = await placeSpacecraft(spiceEcl, 0, times, positions);
-    const slack = (2 * (chain(front, 0) + chain(back, 0))) / (Math.min(...distances) * mean(radii(front))) + 1e-12;
     for (let i = 0; i < times.length; i++) {
       assert.equal(api.setState(SC, 0, times[i], [...positions[i], 0, 0, 0], 30), 0);
-      await judge(tally, spiceEcl, api, radii, back, front, SC, sc, times[i], slack);
-      await judge(tally, spiceEcl, api, radii, front, back, SC, sc, times[i], slack); // the far body hides nothing
+      await judge(tally, spiceEcl, api, radii, back, front, SC, sc, times[i], err);
+      await judge(tally, spiceEcl, api, radii, front, back, SC, sc, times[i], err); // the far body hides nothing
     }
   }
-  say('round bodies (the Moon over the Sun; the band is the blob\'s position error alone)', round);
+  say('round bodies (the Moon over the Sun)', round);
   say('with an oblate or triaxial body', oblate);
   assert.ok(round.codes[1] > 0 && round.codes[2] > 0 && round.codes[3] > 0, 'partial, annular, and full all occur');
   assert.ok(oblate.codes[1] > 0 && oblate.codes[2] > 0 && oblate.codes[3] > 0);
+});
+
+const radiiKernelFor = (naif, radii) => new TextEncoder().encode(`KPL/PCK\n\\begindata\nBODY${naif}_RADII = ( ${radii.map((v) => v.toFixed(1)).join(' ')} )\n\\begintext\n`);
+
+test('a body that is not round and has no orientation in the blob is a sphere of its mean radius', { skip }, async () => {
+  await setup();
+  // The Sun has no ORIENT segment in this blob. Flatten it by a tenth on both
+  // sides: CSPICE then turns an ellipsoid with IAU_SUN, the library has only a sphere.
+  const flat = [695700, 695700, 626130];
+  const blob = withRadii(ecl.blob, 10, flat);
+  const api = await load(blob, { skipCrc: true });
+  assert.equal(api.initStatus, 0);
+  await spiceEcl.furnsh(`shape${serial++}.tpc`, radiiKernelFor(10, flat));
+  const radii = (id) => radiiIn(blob, id);
+  const bounds = boundsOf(ecl), base = allowance(bounds, radii, 0, [10]);
+  const position = (id) => bounds.chain(id, 0);
+  const spread = (id) => (id === 10 ? Math.max(...flat) - Math.min(...flat) : 0);
+  const [w0] = ecl.report.windowEt;
+  const vsCspice = newTally();
+  let slot = 0, vsSphere = 0, n = 0;
+  try {
+    for (const [front, back, dist] of [[301, 10, 100], [301, 10, 230], [399, 10, 150], [10, 301, 3]]) {
+      const D = dist * mean(radii(front));
+      const times = [], positions = [];
+      for (let k = 0; k <= 60; k++) {
+        const et = w0 + 400000 + 977 * slot++;
+        const pf = vec((await spiceEcl.spkpos(NAMES[front][0], et, 'J2000', 'NONE', '0')).position);
+        const pb = vec((await spiceEcl.spkpos(NAMES[back][0], et, 'J2000', 'NONE', '0')).position);
+        const axis = sub(pf, pb), u = axis.map((v) => v / norm(axis));
+        let w = cross(u, [0.3, -0.5, 0.8]); w = w.map((v) => v / norm(w));
+        // from the line of centers out to twice the angle at which mean spheres part
+        const reach = 2 * (Math.asin(mean(radii(front)) / D) + mean(radii(back)) / norm(axis));
+        const phi = (reach * k) / 60;
+        times.push(et);
+        positions.push(pf.map((v, i) => v + D * (Math.cos(phi) * u[i] + Math.sin(phi) * w[i])));
+      }
+      const sc = await placeSpacecraft(spiceEcl, 0, times, positions);
+      for (let i = 0; i < times.length; i++) {
+        assert.equal(api.setState(SC, 0, times[i], [...positions[i], 0, 0, 0], 30), 0);
+        // against CSPICE, the allowance is the spread of the Sun's radii on top of the declared errors
+        const r = await judge(vsCspice, spiceEcl, api, radii, back, front, SC, sc, times[i], (id) => base(id) + spread(id));
+        // against the model with the Sun as its mean sphere, the declared position errors alone
+        const f = sub(vec((await spiceEcl.spkpos(NAMES[front][0], times[i], 'J2000', 'NONE', '0')).position), positions[i]);
+        const b = sub(vec((await spiceEcl.spkpos(NAMES[back][0], times[i], 'J2000', 'NONE', '0')).position), positions[i]);
+        const shape = async (id) => (id === 10 ? sphereOf(flat) : shapeAt(spiceEcl, radii, id, times[i]));
+        const F = await shape(front), T = await shape(back);
+        const model = limbModel(f, b, F, T);
+        if (r.got !== model) {
+          assert.ok(unsettled(f, b, F, T, base(front) + ARITH * norm(f), base(back) + ARITH * norm(b), model), `with the Sun as its mean sphere the model gives ${model}, the library ${r.got}`);
+          vsSphere++;
+        }
+        n++;
+      }
+    }
+  } finally {
+    await spiceEcl.furnsh(`shape${serial++}.tpc`, radiiKernelFor(10, radiiIn(ecl.blob, 10))); // put the Sun back
+  }
+  assert.ok(position(10) < 1, 'the position allowance is far below the spread, so the two comparisons differ in kind');
+  say('a flattened Sun the blob cannot orient, against CSPICE\'s ellipsoid', vsCspice);
+  console.log(`    against the model with that Sun as a sphere of its mean radius: ${n - vsSphere} of ${n} agree, the rest unsettled by the declared position errors`);
+  assert.ok(vsCspice.differ > 0, 'the sphere does differ from the ellipsoid somewhere: the limit is real');
+});
+
+test('an observer just above the surface, with the Sun crossing the horizon', { skip }, async () => {
+  await setup();
+  const api = await load(ecl.blob);
+  const radii = (id) => radiiIn(ecl.blob, id);
+  const bounds = boundsOf(ecl);
+  const [w0] = ecl.report.windowEt;
+  // CSPICE's occultation routine notes that it can misclassify unusual geometry.
+  // It does here, and only where the observer is outside the front body but
+  // inside the sphere of its largest radius (39 of the 40 cases are 1 m to 2 km
+  // above the 13 by 11.4 by 9.1 km stand-in, where it reports nothing hidden with
+  // the Sun below the horizon). So in this test a disagreement between CSPICE
+  // and the model goes to a third method, direct lines of sight, and the library
+  // must match the two that agree.
+  const tally = newTally(true);
+  let slot = 0;
+  for (const [front, heights] of [[399, [0.002, 0.1, 5, 400]], [STANDIN, [0.001, 0.05, 2]]]) {
+    const r = radii(front);
+    // the spacecraft is placed relative to the front body, so that body's allowance is its orientation error alone
+    const err = (id) => (id === front ? bounds.orientErr(id) * Math.max(...r) : bounds.chain(id, front));
+    const times = [], positions = [];
+    for (const h of heights) {
+      const dip = Math.acos(mean(r) / (mean(r) + h)); // roughly how far below the horizontal the horizon lies
+      for (let k = -30; k <= 30; k++) {
+        const et = w0 + 700000 + 977 * slot++;
+        const rot = await spiceEcl.pxform('J2000', NAMES[front][1], et);
+        const sunJ = vec((await spiceEcl.spkpos('SUN', et, 'J2000', 'NONE', NAMES[front][0])).position);
+        const s = [0, 1, 2].map((i) => rot[3 * i] * sunJ[0] + rot[3 * i + 1] * sunJ[1] + rot[3 * i + 2] * sunJ[2]).map((v) => v / norm(sunJ));
+        // a surface normal at right angles to the Sun (the terminator), then tipped by
+        // beta toward the Sun: beta is the Sun's elevation above the local horizontal
+        let n0 = cross(s, [0.2, 0.5, 0.84]); n0 = n0.map((v) => v / norm(n0));
+        const beta = -dip + (k / 30) * 0.012; // the Sun's angular radius is 0.0047
+        const nrm = n0.map((v, i) => Math.cos(beta) * v + Math.sin(beta) * s[i]);
+        const scale = Math.hypot(r[0] * nrm[0], r[1] * nrm[1], r[2] * nrm[2]);
+        const p = nrm.map((v, i) => (r[i] * r[i] * v) / scale + h * v); // body-fixed: the surface point with that normal, raised h
+        times.push(et);
+        positions.push([0, 1, 2].map((i) => rot[i] * p[0] + rot[3 + i] * p[1] + rot[6 + i] * p[2]));
+      }
+    }
+    const sc = await placeSpacecraft(spiceEcl, front, times, positions);
+    for (let i = 0; i < times.length; i++) {
+      assert.equal(api.setState(SC, front, times[i], [...positions[i], 0, 0, 0], 30), 0);
+      await judge(tally, spiceEcl, api, radii, 10, front, SC, sc, times[i], err);
+    }
+  }
+  say('2 m to 400 km above the Earth and 1 m to 2 km above the triaxial stand-in', tally);
+  console.log(`    in ${tally.cspiceAlone} further cases CSPICE stands alone against the library, the brute-force model, and direct lines of sight`);
+  assert.ok(tally.codes[0] > 0 && tally.codes[1] > 0 && tally.codes[3] > 0, 'none, partial, and full all occur');
 });
 
 test('Saturn hiding the Sun and the Earth from Cassini at orbit insertion', { skip }, async () => {
   await setup();
   const api = await load(soi.blob);
   const radii = (id) => radiiIn(soi.blob, id);
-  const { chain } = boundsOf(soi);
+  const bounds = boundsOf(soi), err = allowance(bounds, radii, -82);
   const [w0, w1] = soi.report.windowEt;
   const tally = newTally();
   const lines = [];
   for (const target of [10, 399]) {
-    const slack = (2 * chain(699, -82)) / 60000 + 1e-12;
     // When any occultation starts and ends, for CSPICE and for the library,
-    // refined from the 15 s grid to a few milliseconds.
+    // refined from the 15 s grid to a quarter of a microsecond.
     let prev = null;
     const edges = { got: [], want: [] };
     for (let et = w0 + 30; et < w1 - 30; et += 15) {
-      const r = await judge(tally, spiceSoi, api, radii, target, 699, -82, '-82', et, slack);
+      const r = await judge(tally, spiceSoi, api, radii, target, 699, -82, '-82', et, err);
       for (const side of ['got', 'want']) if (prev && (r[side] !== 0) !== (prev[side] !== 0)) edges[side].push(et);
       prev = r;
     }
     const refine = async (hi, hidden) => {
       let lo = hi - 15;
       const before = await hidden(lo);
-      for (let i = 0; i < 12; i++) { const mid = 0.5 * (lo + hi); if ((await hidden(mid)) === before) lo = mid; else hi = mid; }
+      for (let i = 0; i < 26; i++) { const mid = 0.5 * (lo + hi); if ((await hidden(mid)) === before) lo = mid; else hi = mid; }
       return hi;
     };
     const lite = [], spice = [];
@@ -479,10 +699,66 @@ test('Saturn hiding the Sun and the Earth from Cassini at orbit insertion', { sk
     for (const t of edges.want) spice.push(await refine(t, async (x) => (await truthOcculted(spiceSoi, target, 699, '-82', x)) !== 0));
     assert.equal(spice.length, 2, 'one occultation inside the window');
     assert.equal(lite.length, 2);
-    lines.push(`${NAMES[target][0]} behind Saturn from ${await spiceSoi.et2utc(spice[0], 'ISOC', 0)} to ${await spiceSoi.et2utc(spice[1], 'ISOC', 0)}; the library's start and end come ${lite.map((t, i) => (t - spice[i]).toFixed(1)).join(' and ')} s after CSPICE's`);
+    // The declared errors (a few meters of trajectory, Saturn's orientation at
+    // its largest radius) move the limb by that much across the line of sight;
+    // the spacecraft crosses it at no less than a tenth of its speed, so the
+    // times may differ by ten times the error over the speed, plus the grid.
+    for (let i = 0; i < 2; i++) {
+      const v = await spiceSoi.spkezr('-82', spice[i], 'J2000', 'NONE', 'SATURN');
+      const speed = norm(vec(v.velocity));
+      const bound = (10 * (err(699) + err(target))) / speed + 2 * (15 / 2 ** 26);
+      assert.ok(Math.abs(lite[i] - spice[i]) <= bound, `${NAMES[target][0]} behind Saturn: edge ${i} differs from CSPICE by ${lite[i] - spice[i]} s, allowed ${bound}`);
+    }
+    lines.push(`${NAMES[target][0]} behind Saturn from ${await spiceSoi.et2utc(spice[0], 'ISOC', 0)} to ${await spiceSoi.et2utc(spice[1], 'ISOC', 0)}; the library's start and end come ${lite.map((t, i) => ((t - spice[i]) * 1e6).toFixed(1)).join(' and ')} microseconds after CSPICE's`);
   }
   say('Cassini, every 15 s for a day', tally);
   console.log('    ' + lines.join('\n    '));
+});
+
+// No kernels: the library against the brute-force model, each using the blob's
+// own positions and orientations, for random shapes of the stand-in body in
+// front of the Sun (round) and behind and in front of the Earth (oblate).
+test('random triaxial shapes: the library and the brute-force model agree away from changes of code', async () => {
+  const rnd = prng(4242);
+  const t = ecl.report.windowEt[0] + 5000;
+  const counts = [0, 0, 0, 0];
+  let n = 0, near = 0;
+  for (let s = 0; s < 120; s++) {
+    const size = 10 ** (1 + 3 * rnd());
+    const shape = s % 4 === 0 ? [size, size, size * 10 ** (-rnd())] : [size * 10 ** (-rnd()), size * 10 ** (-rnd()), size * 10 ** (-rnd())];
+    const blob = withRadii(ecl.blob, STANDIN, shape);
+    const api = await load(blob, { skipCrc: true });
+    const radii = (id) => radiiIn(blob, id);
+    const shapeOfBody = (id) => ({ r: radii(id), rot: isRound(radii(id)) ? null : api.orient(id, t).rot });
+    for (const [front, back] of [[STANDIN, 10], [STANDIN, 399], [399, STANDIN]]) {
+      const pf = api.state(front, 0, t, 0).state.slice(0, 3), pb = api.state(back, 0, t, 0).state.slice(0, 3);
+      const F = shapeOfBody(front), T = shapeOfBody(back);
+      const axis = sub(pf, pb), u = axis.map((v) => v / norm(axis));
+      let w = cross(u, [rnd() - 0.5, rnd() - 0.5, rnd() - 0.5]); w = w.map((v) => v / norm(w));
+      for (let i = 0; i < 24; i++) {
+        // from just above the front body to far from it, off the line of centers by up to
+        // a little more than the angle the two bodies span
+        const D = Math.max(...F.r) * (1 + 10 ** (-3 + 7 * rnd()));
+        const span = Math.asin(Math.min(1, Math.max(...F.r) / D)) + Math.max(...T.r) / norm(axis);
+        const phi = 1.3 * span * rnd();
+        const o = pf.map((v, k) => v + D * (Math.cos(phi) * u[k] + Math.sin(phi) * w[k]));
+        assert.equal(api.setState(SC, 0, t, [...o, 0, 0, 0], 30), 0);
+        const got = api.occulted(back, front, SC, t);
+        const f = sub(pf, o), b = sub(pb, o);
+        const model = limbModel(f, b, F, T);
+        if (model < 0) { assert.equal(got.status, 6, 'inside a body'); continue; }
+        assert.equal(got.status, 0);
+        n++; counts[model]++;
+        if (got.code !== model) {
+          // only where a change of a billionth in either body's size changes the model's answer
+          assert.ok(unsettled(f, b, F, T, 1e-9 * Math.min(...F.r), 1e-9 * Math.min(...T.r), model), `radii ${shape}, ${back} behind ${front}: library ${got.code}, model ${model}`);
+          near++;
+        }
+      }
+    }
+  }
+  console.log(`  ${n} cases over 120 shapes (model: ${counts[0]} none, ${counts[1]} partial, ${counts[2]} annular, ${counts[3]} full); ${n - near} agree, ${near} within a billionth of a change of code`);
+  assert.ok(counts.every((c) => c > 0));
 });
 
 test('occultation requests that cannot be served get status codes', async () => {
@@ -504,6 +780,16 @@ test('occultation requests that cannot be served get status codes', async () => 
   assert.equal(api.occulted(10, 301, SC, t).status, 2, 'the spacecraft has no state yet');
   assert.equal(api.exports.lite_occulted(10, 301, 399, t, 0), 6, 'null output');
   assert.deepEqual(api.occulted(10, 301, 399, t), { status: 0, code: 0 });
+  // The Earth is its ellipsoid: 5 km above the pole is outside it, though inside
+  // the sphere of its mean radius, and 5 km above the equator is still inside
+  // the sphere of its largest radius plus 5 km; inside the ellipsoid is refused.
+  const rot = api.orient(399, t).rot;
+  for (const [pos, status] of [[[0, 0, 6361.75], 0], [[6383.14, 0, 0], 0], [[0, 0, 6356], 6], [[6378, 0, 0], 6], [[0, 0, 0], 6]]) {
+    const j = [0, 1, 2].map((k) => rot[k] * pos[0] + rot[3 + k] * pos[1] + rot[6 + k] * pos[2]);
+    assert.equal(api.setState(SC, 399, t, [...j, 0, 0, 0], 30), 0);
+    assert.equal(api.occulted(10, 399, SC, t).status, status, `spacecraft at ${pos} in the Earth's frame`);
+    assert.equal(api.occulted(399, 301, SC, t).status, status, `the same with the Earth as the target`);
+  }
 });
 
 // ---- exactness and robustness -----------------------------------------------

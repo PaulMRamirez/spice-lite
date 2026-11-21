@@ -61,9 +61,9 @@ Verifying the CRC-32 is the costly part of `lite_init`, and its cost trades agai
 <!-- crc-table:start -->
 | LITE_CRC_TABLES | Table size | Module size | Instructions per blob byte | lite_init on the 13 KB blob | Slices |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 64 bytes | 17,984 bytes | 34.0 | 449,222 | 450 |
-| 1 (default) | 1,024 bytes | 19,059 bytes | 20.8 | 275,057 | 276 |
-| 4 | 4,096 bytes | 22,076 bytes | 13.8 | 183,049 | 184 |
+| 0 | 64 bytes | 22,351 bytes | 34.0 | 449,233 | 450 |
+| 1 (default) | 1,024 bytes | 23,426 bytes | 20.8 | 275,068 | 276 |
+| 4 | 4,096 bytes | 26,443 bytes | 13.8 | 183,060 | 184 |
 <!-- crc-table:end -->
 
 The default is the middle row. A larger table buys less than it would on real hardware, because under an interpreter the cost is dominated by the number of operations, not by memory traffic.
@@ -72,25 +72,40 @@ One experiment that is not in the library: replacing the CRC with running sums o
 
 ## Sub-points and occultation
 
-`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module. These two calls add 2,174 bytes to the module and 3,864 bytes to its compiled IR; the sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in. No ceilings are set for them yet.
+`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module, and held to ceilings of 8,000 and 18,000 instructions: the script fails if a row exceeds its ceiling. The ceilings are the largest measured rows (6,643 and 15,110) with about a fifth of headroom, enough for the CI compiler's 3% and for small changes, not for a blob with deeper trees or higher degrees than these. The sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in; modeling bodies as ellipsoids in `lite_occulted` added 4,601 bytes to the module (18,825 to 23,426) and 8,180 bytes to its compiled IR (30,434 to 38,614), and the heap `spacewasm validate` reports for the load went from 32,550 bytes in 4 pages to 41,086 in 6 of 16.
 
 <!-- geometry-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_sub_point, Moon (a sphere) from Earth | 5,253 | 6 |
-| lite_sub_point, Earth (a spheroid) from the Moon | 5,420 | 6 |
-| lite_sub_point, triaxial stand-in from Earth, three segments | 6,625 | 7 |
-| lite_sub_point, Earth from a supplied spacecraft state 900 km up | 2,988 | 3 |
-| lite_sub_point, triaxial stand-in from a supplied spacecraft state 10 km up | 2,817 | 3 |
-| lite_occulted, Sun by the Moon from a supplied spacecraft state (none) | 7,869 | 8 |
-| lite_occulted, Earth by the Moon from the Sun (partial) | 9,430 | 10 |
-| lite_occulted, Sun by Earth from the Moon (full) | 8,268 | 9 |
-| lite_occulted, Earth by the Sun from the Moon (the Sun is behind) | 7,913 | 8 |
-| lite_sub_point, Saturn (a spheroid) from Cassini (predicted) | 4,800 | 5 |
-| lite_occulted, Sun by Saturn from Cassini (full) | 7,092 | 8 |
+| lite_sub_point, Moon (a sphere) from Earth | 5,265 | 6 |
+| lite_sub_point, Earth (a spheroid) from the Moon | 5,432 | 6 |
+| lite_sub_point, triaxial stand-in from Earth, three segments | 6,643 | 7 |
+| lite_sub_point, Earth from a supplied spacecraft state 900 km up | 2,990 | 3 |
+| lite_occulted, triaxial stand-in by Earth from a supplied state (two ellipsoids, none) | 5,923 | 6 |
+| lite_sub_point, triaxial stand-in from a supplied spacecraft state 10 km up | 2,819 | 3 |
+| lite_occulted, Sun by the Moon from a supplied spacecraft state (two spheres, none) | 7,437 | 8 |
+| lite_occulted, Earth by the triaxial stand-in from a supplied state (two ellipsoids) | 5,911 | 6 |
+| lite_occulted, Earth by the Moon from the Sun (partial) | 9,690 | 10 |
+| lite_occulted, Sun by Earth from the Moon (full) | 9,714 | 10 |
+| lite_occulted, Earth by the Sun from the Moon (the Sun is behind) | 8,603 | 9 |
+| lite_occulted, Sun by Earth from the Moon, far apart in the sky (none) | 7,198 | 8 |
+| lite_occulted, Sun by Earth from 2 m above its surface, Sun below the horizon (full) | 8,462 | 9 |
+| lite_occulted, Sun by Earth from 2 m above its surface, lower limb on the horizon (partial, by search) | 10,436 | 11 |
+| lite_occulted, Sun by Earth from 2 m above its surface, Sun just clear of the horizon (none, by the full search) | 14,828 | 15 |
+| lite_sub_point, Saturn (a spheroid) from Cassini (predicted) | 4,811 | 5 |
+| lite_occulted, Sun by Saturn from Cassini (full) | 8,596 | 9 |
+| lite_occulted, Earth by Saturn from Cassini (two ellipsoids, full) | 11,342 | 12 |
+| lite_occulted, Sun by Saturn from Cassini, six hours earlier (none) | 6,160 | 7 |
+| lite_occulted, a Moon with unequal radii by Earth from 2 m above its surface, just clear of the horizon (two ellipsoids, none, by the full search) | 15,110 | 16 |
 <!-- geometry-table:end -->
 
-A sub-point is a geometric state, an orientation, and the nearest-point solution: from a supplied state, where the state costs almost nothing, the whole call is about 2,900 instructions, of which the orientation is 1,170 and the Newton iteration with its two arctangents the rest. The shape matters little: the triaxial case costs no more than the spheroid. An occultation is two geometric states (target and front body, each from the observer), three arctangents, and two square roots, so it costs about what its two states cost plus 600; evaluating the observer's own path once instead of twice would save a segment or two and has not been done.
+A sub-point is a geometric state, an orientation, and the nearest-point solution: from a supplied state, where the state costs almost nothing, the whole call is about 2,900 instructions, of which the orientation is 1,170 and the Newton iteration with its two arctangents the rest. The shape matters little: the triaxial case costs no more than the spheroid.
+
+An occultation is the positions of the target and the front body from the observer, then the shapes. Each link of the body tree on those two paths is evaluated once, so the observer's own path is not paid for twice: four segments where earlier drafts evaluated five or six. What follows depends on the bodies. Two round bodies take three arctangents and two square roots, about 450 instructions, and the answers have the same bits as before. Otherwise the call first asks whether the spheres of the largest radii are apart in the sky, which costs under a hundred instructions and settles most queries a polling sequence makes (the rows marked none at 5,911 to 7,198). Past that, each body that is not round costs one orientation (1,170), and the ellipsoid test about 1,600: the limb, three vectors carried through both frames, a three by three quadratic form, and its sign from the two stationary points of a cubic. The rows marked partial or full at 8,462 to 11,342 are this path.
+
+The search is the costly branch and a rare one: it runs only when the two bodies' cones cross and the observer is so close to the front body that the crossing might be with the target's mirror image behind it (some 70 m above the Earth for the Sun). It costs about 205 instructions for each of at most 31 evaluations and stops at the first one that shows a shared direction, so a partial occultation found this way costs 10,436 and a clear Sun 14,828; the largest row, 15,110, adds a second orientation.
+
+Against earlier drafts, which modeled both bodies as spheres at 7,040 to 9,372 instructions: a query between round bodies or between bodies far apart is cheaper by a segment or two, and a query that needs an ellipsoid is dearer by 200 to 1,500, the price of an answer that agrees with CSPICE at the limb of a flattened body.
 
 ## Time conversion against the piece count
 

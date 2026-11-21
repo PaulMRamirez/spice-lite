@@ -65,7 +65,7 @@ await make('eclipses', (q, api, report) => {
   }
   // the spacecraft near the limb: behind the front body on the line from the
   // back one, then stepped sideways through every code
-  for (const [front, back, dist] of [[301, 10, 300000], [301, 10, 500000], [399, 10, 900000], [399, 301, 20000], [301, 399, 40000], [4, 10, 5000]]) {
+  for (const [front, back, dist] of [[301, 10, 300000], [301, 10, 500000], [399, 10, 900000], [399, 301, 20000], [301, 399, 40000], [4, 10, 5000], [4, 399, 60], [399, 4, 9000]]) {
     const pf = api.state(front, 0, t, 0).state.slice(0, 3), pb = api.state(back, 0, t, 0).state.slice(0, 3);
     const axis = sub(pf, pb), u = axis.map((v) => v / norm(axis));
     let w = cross(u, [0.3, -0.5, 0.8]); w = w.map((v) => v / norm(w));
@@ -74,6 +74,28 @@ await make('eclipses', (q, api, report) => {
       const o = pf.map((v, i) => v + dist * (Math.cos(phi) * u[i] + Math.sin(phi) * w[i]));
       q.push(`setstate ${SC} 0 ${toHex(t)} ${o.map(toHex).join(' ')} ${toHex(0)} ${toHex(0)} ${toHex(0)} ${toHex(60)}`);
       q.push(`occulted ${back} ${front} ${SC} ${toHex(t)}`, `occulted ${front} ${back} ${SC} ${toHex(t)}`);
+    }
+  }
+  // the spacecraft just above the Earth and the stand-in with the Sun crossing the
+  // horizon, where the two bodies' cones cross behind the observer as well as
+  // in front and the answer takes the library's search: a point whose surface
+  // normal is at right angles to the Sun, tipped toward it step by step
+  for (const [body, r, heights] of [[399, [6378.1366, 6378.1366, 6356.7519], [0.002, 3]], [4, [13.0, 11.4, 9.1], [0.001, 0.2]]]) {
+    const rot = api.orient(body, t).rot, sun = api.state(10, body, t, 0).state;
+    const len = Math.hypot(sun[0], sun[1], sun[2]);
+    const s = [0, 1, 2].map((i) => (rot[3 * i] * sun[0] + rot[3 * i + 1] * sun[1] + rot[3 * i + 2] * sun[2]) / len);
+    let n0 = cross(s, [0.2, 0.5, 0.84]); n0 = n0.map((v) => v / norm(n0));
+    for (const h of heights) {
+      const dip = Math.acos(r[2] / (r[2] + h));
+      for (let k = -8; k <= 8; k++) {
+        const beta = -dip + 0.0012 * k * (body === 4 ? 0.7 : 1);
+        const nrm = n0.map((v, i) => Math.cos(beta) * v + Math.sin(beta) * s[i]);
+        const scale = Math.hypot(r[0] * nrm[0], r[1] * nrm[1], r[2] * nrm[2]);
+        const p = nrm.map((v, i) => (r[i] * r[i] * v) / scale + h * v);
+        const o = [0, 1, 2].map((i) => rot[i] * p[0] + rot[3 + i] * p[1] + rot[6 + i] * p[2]);
+        q.push(`setstate ${SC} ${body} ${toHex(t)} ${o.map(toHex).join(' ')} ${toHex(0)} ${toHex(0)} ${toHex(0)} ${toHex(60)}`);
+        q.push(`occulted 10 ${body} ${SC} ${toHex(t)}`, `occulted ${body} 10 ${SC} ${toHex(t)}`);
+      }
     }
   }
   q.push('clearstate', `subpoint 399 ${SC} ${toHex(t)}`, `occulted 10 301 ${SC} ${toHex(t)}`);
