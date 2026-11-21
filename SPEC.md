@@ -13,7 +13,7 @@ The pieces, in the order data flows:
 3. **spice-lite (flight guest).** A small C library with no imports and no heap, statically linked into a sequence. It reads the blob in place.
 4. **Validator (ground).** Replays queries against full CSPICE and checks every answer against the bounds the blob declares. Today this is the accuracy tier of the test suite.
 
-In scope for 0.1: time conversion from the host clock, body states in J2000, body orientation, surface sites, and two spacecraft state sources. Out of scope: reading SPICE kernels onboard, instrument kernels and fields of view, attitude (C-kernel) data, shape models, geometry event search, and any write path.
+In scope for 0.1: time conversion from the host clock, body states in J2000, body orientation, surface sites, sub-points, occultation of one body by another, and two spacecraft state sources. Out of scope: reading SPICE kernels onboard, instrument kernels and fields of view, attitude (C-kernel) data, shape models, geometry event search, and any write path.
 
 ## Design constraints
 
@@ -83,7 +83,7 @@ A section type appears at most once.
 
 ### TIME
 
-Each entry maps a stretch of the host clock to ET with a straight line: `et = et_start + rate * (host - host_start)`. The slicer is expected to fold spacecraft clock coefficients, leap seconds, and the periodic TDB term into these pieces. The reference slicer does not do that yet; it writes the pieces its configuration gives it.
+Each entry maps a stretch of the host clock to ET with a straight line: `et = et_start + rate * (host - host_start)`. The slicer folds spacecraft clock coefficients, leap seconds, and the periodic TDB term into these pieces, so the library only ever evaluates one line. How the reference slicer derives them, and what a host reading must mean for that to work, is under "Pieces from a spacecraft clock kernel" below.
 
 | Offset | Size | Field | Meaning |
 | --- | --- | --- | --- |
@@ -93,7 +93,35 @@ Each entry maps a stretch of the host clock to ET with a straight line: `et = et
 | 16 | 8 | `et_start` | ET at `host_start` |
 | 24 | 8 | `rate` | ET seconds per host second |
 
-A reading uses the piece with the same base and the latest `host_start` not after it. Host seconds are whole seconds plus microseconds as one 64-bit float, which is exact for any 32-bit second count.
+A reading uses the piece with the same base and the latest `host_start` not after it. A piece has no end: it answers until the next piece of its base begins, and the last one is extended in a straight line past the blob's window. A reading below every piece of its base is out of coverage. Host seconds are whole seconds plus microseconds as one 64-bit float, formed as `seconds + microseconds * 1e-6`; every microsecond reading of a 32-bit second count gives a distinct value, but above 2^30 seconds the float resolves only 0.24 microseconds (0.48 above 2^31).
+
+#### Pieces from a spacecraft clock kernel
+
+A slicer configuration gives TIME entries in two forms. The explicit form, `{ "base": 3, "hostStart": 0, "etOffset": 0, "rate": 1.0 }`, is one piece written as given, with `etOffset` measured from the window start. The clock form, `{ "base": 3, "sclk": -82, "maxErrorSeconds": 1e-6 }`, names a spacecraft clock by its NAIF code and a tolerance, and the slicer (`tools/sclk-time.mjs`) derives the pieces from the SCLK kernel among the configured kernels. Optional members are `maxPieces` (default 256) and `partition` (a single partition number, counted from 1).
+
+**What a host reading means.** For the clock form, host seconds are the spacecraft clock's own count: the value of its most significant field, with the lesser fields as a fraction of one count carried in the microseconds. In SPICE terms, host seconds are `ticks / ticks_per_count`, where `ticks` is the reading as the SCLK kernel counts it within its partition (field values less their offsets, the unit of `SCLK_PARTITION_START` and `SCLK_PARTITION_END`) and `ticks_per_count` is the product of every modulus but the first. For the usual clock whose first field counts nominal seconds this is the clock count in seconds measured from the clock's zero, which is what an F Prime deployment reports as an `Fw::Time` with base `TB_SC_TIME` (3) when its time source is that counter. The reading carries no partition number.
+
+**Limits of that convention.**
+
+- A clock count of 2^32 or more does not fit the seconds field, and the slicer refuses a window that needs one.
+- The flight software must turn the sub-count fields into microseconds itself. A tick that is not a whole number of microseconds (1/256 of a count is 3,906.25) is rounded by the host, an error of up to half a microsecond of clock time that the blob cannot see and its declared error does not include.
+- Encoded SCLK, which SPICE uses internally, runs on through partition boundaries; the clock's own count does not, and the count is what the host has. The slicer therefore maps each partition separately and always starts a new piece at a partition boundary.
+- One time base can cover several partitions only if no reading inside the window occurs in two of them, because a piece is selected by the reading alone. A clock that was set forward satisfies this. A clock that was reset to a count it had already shown does not, and the slicer refuses it; the mission then gives each partition its own entry (with `partition`) under its own time base and has the flight software report the base that matches the clock's current partition, or cuts one blob per partition.
+- Between two partitions that share a base there are counts the clock never showed. The library answers them anyway, by extending the earlier partition's last line; nothing in the blob marks them as invalid.
+- A mission whose flight software reports time some other way (seconds from a mission epoch, a count already corrected onboard, a field layout that is not count plus fraction) must not use the clock form. It computes its own pieces on the ground and gives them in the explicit form.
+
+**How the pieces are cut.** The truth is CSPICE: each reading is converted to encoded SCLK and then to ET with `sct2e`, which applies the kernel's coefficients, its time system (TDB or TT), and through the leapseconds kernel the periodic TDB term. A new piece always starts at the window's first reading, at each partition boundary, and at the first reading at or after each coefficient record (where the rate changes and the time may step). Every `host_start` is a whole microsecond reading formed the way the library forms it, so a reading on a boundary selects the same piece on every host. Between those points each piece is made as long as its line allows: the line has the slope of the chord between the piece's ends and is shifted to halve its largest residual, and the piece grows until that residual reaches nine tenths of the tolerance. The slicer then measures every piece against CSPICE at 2,049 readings including both ends, with the library's own arithmetic; a piece over the tolerance is cut again more finely, and if the tolerance still cannot be met, or more than `maxPieces` pieces would be needed, the slicer fails and writes no blob. The tolerance, the measured worst error, and the piece count are recorded in the slicer's report (`timeFit`) and in PROV (`time`). The TIME entries themselves carry no error field.
+
+What limits a piece's length, once the clock's own rate changes are split out, is the periodic difference between TDB and TT (about 1.7 milliseconds in amplitude, with a period of a year) for a clock kept on TT; a clock kept on TDB has no such term. Measured on the test clocks (`test/sclk.test.mjs`; all but the first are synthetic kernels in `test/fixtures`), over 30 days:
+
+| Clock | Window start | Pieces at 1 microsecond | Worst error | Pieces at 1 millisecond | Worst error |
+| --- | --- | --- | --- | --- | --- |
+| cassini-demo (TDB, one rate) | 2004-06-27 | 1 | 0.03 microseconds | 1 | 0.03 microseconds |
+| Steady clock on TT | 2004-06-27, where the periodic term bends least | 2 | 0.89 microseconds | 1 | 3.6 microseconds |
+| Steady clock on TT | 2004-03-20, where it bends most | 6 | 0.92 microseconds | 1 | 27 microseconds |
+| Four rates, a 4 ms step, two partitions, on TT | 2004-06-27 | 6 | 0.92 microseconds | 5 | 0.98 microseconds |
+
+The errors are multiples of 0.03 microseconds because that is the spacing of 64-bit ET values in 2004; a tolerance near that spacing cannot be met with any number of pieces. The library scans every TIME entry on each conversion, so the cost grows with the piece count: under SpaceWasm, 83 instructions with one piece, up to 248 with the six pieces of `test/blobs/sclk-drift.slb`, and up to 898 with 26, or roughly 60 plus 33 per piece. The 500-instruction ceiling for a time conversion holds to about a dozen pieces.
 
 ### BODY
 
@@ -116,9 +144,9 @@ A segment gives one body relative to its parent on a uniform time grid. Uniform 
 | --- | --- | --- | --- |
 | 0 | 4 | `target` | NAIF code of the body |
 | 4 | 4 | `center` | NAIF code of its parent |
-| 8 | 1 | `kind` | 1, 2, or 3; see below |
+| 8 | 1 | `kind` | 1, 2, 3, or 4; see below |
 | 9 | 1 | `source` | 0: published ephemeris. 1: predicted trajectory |
-| 10 | 1 | `degree` | Polynomial degree n, at most 40 |
+| 10 | 1 | `degree` | Polynomial degree n, at most 40; zero for kind 4 |
 | 11 | 1 | reserved | Zero |
 | 12 | 4 | `record_count` | Number of records |
 | 16 | 8 | `t_start` | Start of the first record |
@@ -133,10 +161,49 @@ A segment gives one body relative to its parent on a uniform time grid. Uniform 
 | 1 | 3(n+1) floats: Chebyshev coefficients for X, then Y, then Z | `record_count * interval` | Position by Clenshaw recurrence; velocity by differentiating the same series |
 | 2 | 6(n+1) floats: position coefficients, then velocity coefficients | `record_count * interval` | Both by Clenshaw recurrence |
 | 3 | 6 floats: a state at the grid point | `(record_count - 1) * interval` | Cubic Hermite between adjacent grid points |
+| 4 | 104 bytes: orbital elements, their rates, and six harmonic coefficients | `record_count * interval` | Compact orbit model, below |
 
 Kind 1 is SPICE SPK type 2 with the per-record midpoint and radius removed, since the uniform grid implies them. Kind 2 mirrors SPK type 3. Within a record the normalized time is `x = 2 * (t - t_k) / interval - 1`. A reader that meets a kind it does not know answers queries that need it with the unsupported status.
 
 The error fields are measured by the slicer, between the fit nodes and at both record edges, where the derivative of a Chebyshev fit is at its worst.
+
+#### Kind 4: compact orbit
+
+Kind 4 describes a bound orbit around the segment's center with elements that drift, so one record can cover many revolutions. It is the form of the GPS broadcast ephemeris (Keplerian elements, linear rates, and corrections in twice the argument of latitude), with the eccentricity carried as a vector in the orbit plane so that a circular orbit is regular. Elements are referred to J2000: the inclination is measured from the J2000 XY plane and the node from the J2000 X axis. The record carries no gravitational parameter; the velocity is the exact time derivative of the position formula.
+
+A record is 104 bytes. The first seven fields are 64-bit floats and the rest 32-bit floats, which is enough for rates and small corrections. Values are at the record's mid epoch, `t_k + interval / 2`, and `tau` is the query time minus that epoch.
+
+| Offset | Size | Field | Meaning |
+| --- | --- | --- | --- |
+| 0 | 8 | `a` | Semi-major axis, kilometers |
+| 8 | 8 | `ex` | Eccentricity times the cosine of the argument of periapsis |
+| 16 | 8 | `ey` | Eccentricity times the sine of the argument of periapsis |
+| 24 | 8 | `inc` | Inclination, radians |
+| 32 | 8 | `node` | Right ascension of the ascending node, radians |
+| 40 | 8 | `lam` | Mean argument of latitude (mean anomaly plus argument of periapsis), radians |
+| 48 | 8 | `lam_rate` | Rate of `lam`, radians per second |
+| 56 | 4 | `a_rate` | Rate of `a`, kilometers per second |
+| 60 | 4 | `ex_rate` | Rate of `ex`, per second |
+| 64 | 4 | `ey_rate` | Rate of `ey`, per second |
+| 68 | 4 | `inc_rate` | Rate of `inc`, radians per second |
+| 72 | 4 | `node_rate` | Rate of `node`, radians per second |
+| 76 | 4 | `lam_quad` | Quadratic term of `lam`, radians per second squared |
+| 80 | 4 | `cuc`, then `cus` at 84 | Cosine and sine corrections to the argument of latitude, radians |
+| 88 | 4 | `crc`, then `crs` at 92 | Cosine and sine corrections to the radius, kilometers |
+| 96 | 4 | `cic`, then `cis` at 100 | Cosine and sine corrections to the inclination, radians |
+
+Evaluation at `tau`:
+
+1. Each element is its value plus its rate times `tau`; `lam` also adds `lam_quad * tau^2`.
+2. Solve Kepler's equation in the form `F - ex sin F + ey cos F = lam` for the eccentric argument of latitude `F`, by Newton steps on the offset `F - lam` starting from zero. A step smaller than 1e-8 radians ends the iteration, and at most 12 steps are taken.
+3. With `w = sqrt(1 - ex^2 - ey^2)`, `beta = 1 / (1 + w)`, and `D = ey cos F - ex sin F`, the position in the orbit plane, in units of `a` and with the first axis toward the ascending node, is `X = cos F - ex - beta ey D` and `Y = sin F - ey + beta ex D`. The radius is `r = a (1 - ex cos F - ey sin F)`, and the argument of latitude `u` has `cos u = a X / r` and `sin u = a Y / r`.
+4. The corrections are `du = cuc cos 2u + cus sin 2u`, and likewise `dr` from `crc`, `crs` and `di` from `cic`, `cis`.
+5. In the orbit plane the corrected point is `x' = (r + dr) cos(u + du)`, `y' = (r + dr) sin(u + du)`. With `i = inc + di`, the J2000 position is `(x' cos node - y' cos i sin node, x' sin node + y' cos i cos node, y' sin i)`.
+6. The velocity is the time derivative of steps 1 to 5 with every rate included.
+
+Validity limits. The model is for ellipses only. At the query time the semi-major axis must be positive and finite and the eccentricity at most 0.9; `lam`, `node`, and `inc + di` must each be within one million radians. If any of these fails, or the Kepler iteration has not converged in 12 steps (seven is the most seen at the eccentricity limit), the query returns the unsupported status. These checks keep every divisor in the evaluation away from zero, so a record of arbitrary bits yields a status or a number, never a trap. `lite_init` checks the structure: the `degree` field of a kind 4 segment must be zero and its records must lie inside the blob, or the blob is rejected. Hyperbolic and parabolic arcs are out of scope for this kind; the slicer refuses to fit one.
+
+Accuracy is whatever the slicer measured, as for the other kinds: it fits each record by least squares to states sampled from the source, then measures the stored record (after rounding to its 32-bit fields) against the source on a denser grid that includes both record edges. Neighboring records are fitted independently, so the state can step at a record boundary by up to twice the declared error. On near-circular orbits the model holds tens of meters over a record of a day; on eccentric orbits it is much coarser. `docs/orbit-segment.md` has the measurements, all of them on synthetic orbiters so far.
 
 ### ORIENT
 
@@ -171,7 +238,7 @@ Sites need an ORIENT segment for their body.
 
 ### PROV
 
-PROV is UTF-8 JSON, padded with spaces to an 8-byte boundary. It lists each source kernel with its SHA-256, the slicer version, the window, and the fit errors per segment. The flight library never reads it, and a mission may strip it before uplink (and must then rewrite the directory, the identifier, and the CRC).
+PROV is UTF-8 JSON, padded with spaces to an 8-byte boundary. It lists each source kernel with its SHA-256, the slicer version, the window, the fit errors per segment, and for TIME pieces derived from a spacecraft clock their tolerance and measured worst error. The flight library never reads it, and a mission may strip it before uplink (and must then rewrite the directory, the identifier, and the CRC).
 
 ## Spacecraft state
 
@@ -211,8 +278,8 @@ Each call returns a status code, writes results through pointers, and never trap
 | `lite_state_gap(et, &dpos, &dvel)` | Difference between supplied and predicted spacecraft state | yes |
 | `lite_orient(body, et, rot)` | Rotation from J2000 to the body-fixed frame | yes |
 | `lite_site_view(site, target, et, corr, &az, &el, &range)` | Azimuth, elevation, and range of a target seen from a site | geometric only |
-| `lite_sub_point(body, observer, et, &lon, &lat, &alt)` | Point on a body beneath an observer | not yet; returns unsupported |
-| `lite_occulted(target, by, observer, et, &code)` | Whether one body hides another | not yet; returns unsupported |
+| `lite_sub_point(body, observer, et, &lon, &lat, &alt)` | Point on a body's ellipsoid nearest to an observer, and the observer's altitude | geometric only |
+| `lite_occulted(target, by, observer, et, &code)` | Whether one body hides another: none, partial, annular, or full | geometric only; bodies as spheres |
 
 A sequence in F Prime reads the clock with the host's `time` call, which writes a serialized `Fw::Time` into guest memory, and passes those bytes to `lite_fwtime2et`. That helper assumes F Prime's default types and big-endian serialization; a deployment that changes them decodes the time itself and calls `lite_host2et`.
 
@@ -221,6 +288,12 @@ A sequence in F Prime reads the clock with the host's `time` call, which writes 
 Two consequences of the physics are worth knowing. A light-time correction needs the target's segment to reach back by the light time, which is over an hour between Saturn and Earth. And stellar aberration turns the apparent direction by the observer's speed over c, so an error in the observer's velocity moves the apparent position by the range times that velocity error over c; with a spacecraft observer on a coarse predicted segment this dominates the error budget.
 
 **Site views.** Up is the direction from the body center through the site (planetocentric, not geodetic). North is the body's +Z axis with its component along up removed, east completes the right-handed set, azimuth runs from north toward east, and a site at a pole is refused.
+
+**Sub-points and occultation.** Both calls are geometric (no light-time or stellar aberration correction in this version) and both use the supplied spacecraft state while it is fresh.
+
+`lite_sub_point` gives the point on a body's surface nearest to the observer, where the surface is the triaxial ellipsoid of the BODY radii and the frame is the body-fixed frame of the body's ORIENT segment. It returns the planetocentric longitude of that point (from the body's +X axis toward +Y, between minus pi and pi; zero at a pole, where it is undefined), its planetocentric latitude, and the observer's distance from it, which is the altitude. This is SPICE's `subpnt_c` with the method `NEAR POINT/ELLIPSOID` and no correction, with the angles taken as `reclat_c` takes them. The point is found by Newton's method on one number, the multiplier that carries the surface point out along its normal to the observer, started from a bound that keeps every step on the near side of the root. A sphere needs no step, the Earth usually three, and Saturn four; the worst over four million random shapes with axis ratios up to a million was 12, the cap is 24, and a case that reached the cap would return unsupported. Given the same body-fixed observer position, the result agrees with CSPICE to 1e-14 of the body's largest radius in the surface point and 1e-15 of the range in altitude, for shapes from a sphere to 900 by 3 by 1 km; given the blob's own states and orientation, the difference is within the errors the blob declares. The call returns unsupported when the body has no radii (BODY flag bit 0 clear) or a radius that is not positive, the status of `lite_orient` when the body has no orientation at that time (no path when it has no ORIENT segment at all), and bad argument when the observer is inside the ellipsoid, which includes the body observing itself. An observer within rounding of the surface may fall either way.
+
+`lite_occulted` says whether body `by` hides body `target` from the observer, as one of four codes: 0 none, 1 partial (the two disks overlap and neither lies inside the other), 2 annular (`by` lies wholly inside the disk of `target`, a transit), 3 full (`target` lies wholly behind `by`). The nonzero codes equal the magnitude of the code SPICE's `occult_c` gives for the same geometry. Each body is modeled as a sphere whose radius is the mean of its three radii, so no orientation is needed; the mean keeps the model's limb within two thirds of the spread between the smallest and largest radius, with no lean toward reporting or missing an occultation. `by` is in front when the tangent from the observer to its sphere is shorter than the tangent to the target's, which is exact for spheres that do not intersect, and the code is 0 whenever it is not in front. With angular radii `a_by` and `a_target` and angle `s` between the centers, the code is none when `s >= a_by + a_target`, full when `a_by >= a_target` and `s <= a_by - a_target`, annular when `a_target > a_by` and `s <= a_target - a_by`, and partial otherwise. For round bodies (the Sun and the Moon in pck00011) this matches `occult_c` with ellipsoid shapes down to the rounding of the positions. For a flattened body the two can differ only while the geometry is within a band around a change of code: the sum, over the two bodies, of the angle between the spheres of the smallest and the largest radius. That band is 0.3% of the Earth's angular radius and 10% of Saturn's, and the second is not small: for Cassini passing behind Saturn at orbit insertion, the sphere model puts the start and end of the occultation of the Sun 3.5 and 7.0 minutes later than CSPICE does, in a 32 minute event. The call returns unsupported when either body lacks positive radii, and bad argument when `target` and `by` are the same body or the observer is on or inside either sphere, which includes the observer being one of the two.
 
 **Status codes.** 0 OK, 1 out of coverage, 2 no path between the bodies (or an unknown body or site), 3 supplied state stale and no predicted segment, 4 bad blob or no active blob, 5 unsupported, 6 bad argument.
 
@@ -234,17 +307,19 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 
 | Quantity | Target | Measured |
 | --- | --- | --- |
-| Module size | under 24 KiB | 14,695 bytes with the default checksum table (13,620 with the smallest, 17,712 with the largest) |
+| Module size | under 24 KiB | 18,825 bytes with the default checksum table (17,750 with the smallest, 21,842 with the largest) |
 | Host imports | none | none |
 | Declared memory | one 64 KiB page | one page; with a 13 KB Sun, Earth, Moon blob, 45,944 bytes of it stay free |
-| SpaceWasm compiled IR | under 64 KiB | 23,120 bytes |
-| SpaceWasm heap for the load | fits flight defaults | 25,282 bytes in 4 of 16 pages of 8,192 bytes |
+| SpaceWasm compiled IR | under 64 KiB | 30,434 bytes |
+| SpaceWasm heap for the load | fits flight defaults | 32,550 bytes in 4 of 16 pages of 8,192 bytes |
 | Time conversion | under 500 instructions | 106 (163 from serialized F Prime time) |
 | Geometric state, one segment | under 2,500 instructions | 1,711 to 1,982 |
 | Geometric state, up to three segments | under 6,000 instructions | 3,495 (two), 4,601 (three) |
 | State with light time and stellar aberration | under 15,000 instructions | 6,531 to 9,627 |
 | Orientation | none set | 1,170 |
 | Site view | none set | 6,161 |
+| Sub-point | none set | 2,809 to 2,980 from a supplied state; 4,777 to 6,597 over one to three segments |
+| Occultation | none set | 7,040 to 9,372 |
 | `lite_init`, checksum skipped | none set | 2,278 to 2,938 |
 | `lite_init`, checksum verified | none set | 20.8 instructions per blob byte with the default table: 275,040 for a 13 KB blob, 1,866,810 for the 90 KB one |
 
@@ -269,7 +344,7 @@ Three consequences:
 
 - **Natural bodies are cheap.** A month of Sun, Earth, and Moon geometry with orientation and two sites is a 13,160-byte blob (`test/blobs/sun-earth-moon.slb`) at sub-millimeter fit error, and it fits beside the library in the module's single page.
 - **Spacecraft trajectories are not.** Two days at ten-minute records is 76 KiB, and a month would be over 1 MiB. Predicted segments suit short windows or slow trajectories; the supplied state exists for everything else.
-- **A compact orbit model is the likely next segment kind.** Conic elements with secular rates, like SPK type 15, would cover long arcs in tens of bytes.
+- **A compact orbit model covers long arcs of a closed orbit.** Kind 4 holds a near-circular orbiter in 104 bytes per day: on synthetic trajectories (a point mass plus J2), about 30 m for a low Earth orbiter and 3 m for a low lunar orbiter, 30 to 40 times smaller than the smallest Chebyshev segment of the same accuracy. An eccentric orbit (0.3) fits only to about 1 km. A kind 4 state costs 2,048 to 2,290 instructions under SpaceWasm at those eccentricities and up to 3,207 at the model's limit of 0.9, which is over the one-segment ceiling above. The same study found that kind 1 on a closed orbit is much smaller than the Cassini row suggests when its records are long and its degree high (4 to 7 KB per day for the low Earth orbiter). `docs/orbit-segment.md` has the tables.
 
 One deployment note: the F Prime WasmSequencer default gives a guest 8,192 bytes of memory, less than any useful blob, so a mission using this library must raise that setting.
 
@@ -281,6 +356,8 @@ One deployment note: the F Prime WasmSequencer default gives a guest 8,192 bytes
 | B. Accuracy | Each query against full CSPICE through cspice-wasm, using the kernels named in PROV | Error is within the bounds the blob declares, with a slack factor of 1.5 because the test samples different times from the slicer | `test/accuracy.test.mjs` |
 | C. Robustness | Truncated and corrupted blobs | Refused or handled with status codes; no trap, no out-of-bounds read | `test/robust.test.mjs` |
 | D. Cost | Instruction counts per call under SpaceWasm | Within the ceilings above | `scripts/measure-cost.mjs` |
+
+Sub-points and occultation have their own file, `test/geometry.test.mjs`, which applies tiers A to C to those two calls on two further blobs (`eclipses` and `saturn-soi`, with vectors from `tools/make-vectors-geometry.mjs`).
 
 The exactness vectors are text. A query file holds one call per line; the expected file holds one result line per query, with every 64-bit float written as the 16 hexadecimal digits of its bit pattern. Bits, not decimals, are what make tier A an exact comparison.
 
@@ -300,11 +377,11 @@ The slicer is not trusted to grade itself. It writes its fit errors into the blo
 
 1. **Name.** spice-lite is kept for now. Whether a project that is not NAIF's should carry the SPICE name has been put to NAIF; the answer may force a rename.
 2. **Stellar aberration in 0.1.** It is implemented. Whether its dependence on observer velocity accuracy makes it worth keeping for spacecraft observers is open.
-3. **Host time bases.** The TIME section assumes one linear map per time base. Spacecraft clock partitions or resets may need more, and the slicer does not yet derive the pieces from an SCLK kernel.
-4. **Compact orbit segment.** Which model, and how its error is bounded.
+3. **Host time bases.** The slicer now derives the pieces from an SCLK kernel under one stated convention (host seconds are the clock's own count; see TIME). Still open: whether that convention matches what real F Prime deployments put in `TB_SC_TIME`; whether a clock reset should be handled by a second time base, as now, or by a partition number carried in the F Prime time context byte, which `lite_fwtime2et` ignores today; whether the TIME entries should carry their own error bound and an end, so that counts the clock never showed are refused; and whether entries should be required sorted so the library can search instead of scan when a long window needs many pieces. Only type 1 SCLK kernels are read, and the clock's structure is parsed from the kernel text because cspice-wasm does not bind `scpart` or the kernel pool readers.
+4. **Compact orbit segment.** Kind 4 exists, with its error bounded by measurement like the other kinds. Still open: validation on real orbiter kernels (everything so far is synthetic, with no gravity beyond J2, no third bodies, and no drag); whether to add harmonics that suit eccentric orbits; whether elements should be referred to the central body's equator instead of J2000; splitting records at maneuvers; and the cost of the Kepler solve near the eccentricity limit.
 5. **Checksum.** CRC-32 is the draft choice and it dominates start-up: 20.8 interpreter instructions per byte with the default 1 KiB table, against two to three thousand instructions in total with the check skipped. A Fletcher-style sum over 32-bit words measured at 5.8 instructions per byte with no table, but detects fewer error patterns and would change the format. Whether to keep CRC-32, switch, or rely on uplink integrity is open.
 6. **Real memory configuration.** The one-page target assumes a mission will grant a sequence 64 KiB.
-7. **Geodetic sites, sub-points, and occultation.** Declared, not implemented.
+7. **Geodetic sites, and the shape used for occultation.** Sub-points and occultation are implemented; geodetic sites are not. Occultation models bodies as spheres, which moves contact times by minutes for a body as flattened as Saturn seen from nearby. Using the front body's ellipsoid would need its orientation and, for a target that is not a point, an iterative limb test; whether that is worth its cost onboard is open, as is whether either call needs a light-time correction.
 8. **Where the slicer lives.** It is in this repository for now; it may move to cspice-wasm.
 
 ## Notes on sources

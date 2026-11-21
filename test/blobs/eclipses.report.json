@@ -1,0 +1,135 @@
+{
+  "slicer": "0.1.0",
+  "name": "eclipses",
+  "window": {
+    "start": "2004-10-13T00:00:00",
+    "stop": "2004-10-29T00:00:00"
+  },
+  "windowEt": [
+    150897664.18235883,
+    152280064.1824836
+  ],
+  "kernels": [
+    {
+      "name": "naif0012.tls",
+      "sha256": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b"
+    },
+    {
+      "name": "pck00011.tpc",
+      "sha256": "3dff7b1dbeceaa01f25467767d3fa25816051c85d162d1edf04acb310ee28bb1"
+    },
+    {
+      "name": "de440s-inner-cassini.bsp",
+      "sha256": "44d52cff8b9a1cabdaeb38c5b94aedbc520176b10989a49c379b7245625df1ca"
+    }
+  ],
+  "ephem": [
+    {
+      "target": 3,
+      "center": 0,
+      "kind": 1,
+      "source": 0,
+      "degree": 12,
+      "recordCount": 1,
+      "tStart": 150897664.18235883,
+      "interval": 1382400,
+      "maxPosErr": 5.923563006609964e-7,
+      "maxVelErr": 4.7942997585863176e-11,
+      "bytes": 312
+    },
+    {
+      "target": 4,
+      "center": 0,
+      "kind": 1,
+      "source": 0,
+      "degree": 10,
+      "recordCount": 1,
+      "tStart": 150897664.18235883,
+      "interval": 1382400,
+      "maxPosErr": 4.3577935743003365e-7,
+      "maxVelErr": 4.290321022964387e-11,
+      "bytes": 264
+    },
+    {
+      "target": 10,
+      "center": 0,
+      "kind": 1,
+      "source": 0,
+      "degree": 10,
+      "recordCount": 1,
+      "tStart": 150897664.18235883,
+      "interval": 1382400,
+      "maxPosErr": 9.35547824704707e-10,
+      "maxVelErr": 8.927667183371234e-14,
+      "bytes": 264
+    },
+    {
+      "target": 301,
+      "center": 3,
+      "kind": 1,
+      "source": 0,
+      "degree": 12,
+      "recordCount": 4,
+      "tStart": 150897664.18235883,
+      "interval": 345600,
+      "maxPosErr": 3.6090113982617604e-8,
+      "maxVelErr": 1.5515039243953878e-11,
+      "bytes": 1248
+    },
+    {
+      "target": 399,
+      "center": 3,
+      "kind": 1,
+      "source": 0,
+      "degree": 12,
+      "recordCount": 4,
+      "tStart": 150897664.18235883,
+      "interval": 345600,
+      "maxPosErr": 4.4513344901707674e-10,
+      "maxVelErr": 1.9100384927038027e-13,
+      "bytes": 1248
+    }
+  ],
+  "orient": [
+    {
+      "body": 4,
+      "degree": 8,
+      "recordCount": 17,
+      "tStart": 150897664.18235883,
+      "interval": 86400,
+      "w0": -2.758657748988547,
+      "wRate": 0.00022803179271616884,
+      "maxErr": 1.6725581681556337e-11,
+      "bytes": 3672
+    },
+    {
+      "body": 301,
+      "degree": 6,
+      "recordCount": 17,
+      "tStart": 150897664.18235883,
+      "interval": 86400,
+      "w0": 0.2254514028600738,
+      "wRate": 0.0000026598053719266066,
+      "maxErr": 1.4825494156653598e-13,
+      "bytes": 2856
+    },
+    {
+      "body": 399,
+      "degree": 3,
+      "recordCount": 2,
+      "tStart": 150897664.18235883,
+      "interval": 691200,
+      "w0": -1.1901993334006635,
+      "wRate": 0.00007292115373193979,
+      "maxErr": 2.878885191398223e-12,
+      "bytes": 192
+    }
+  ],
+  "sites": [],
+  "time": [],
+  "bytes": 11928,
+  "coverageEt": [
+    150897664.18235883,
+    152280064.18235883
+  ]
+}

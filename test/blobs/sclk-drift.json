@@ -1,0 +1,14 @@
+{
+  "name": "sclk-drift",
+  "comment": "TIME pieces derived from a spacecraft clock kernel. The clock is SYNTHETIC (test/fixtures/synthetic-tt-drift.tsc: four rates, a 4 ms step, two partitions, running on TT); the Sun is here only because a blob needs an ephemeris segment.",
+  "kernels": ["naif0012.tls", "de440s-inner-cassini.bsp", "../fixtures/synthetic-tt-drift.tsc"],
+  "window": { "start": "2004-06-27T00:00:00", "stop": "2004-07-27T00:00:00" },
+  "created": "2004-06-26T00:00:00",
+  "bodies": [
+    { "id": 0, "parent": null },
+    { "id": 10, "parent": 0, "interval": 1382400, "degree": 10, "radiiFrom": "SUN" }
+  ],
+  "time": [
+    { "base": 3, "sclk": -901, "maxErrorSeconds": 1e-6 }
+  ]
+}

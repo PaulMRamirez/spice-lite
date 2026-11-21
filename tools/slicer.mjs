@@ -9,12 +9,16 @@
 //
 // Kernel names in the config are resolved against the directory named by the
 // SPICE_LITE_KERNELS environment variable, or a kernels/ directory beside the
-// config file. Kernels are never committed to this repository.
+// config file. Kernels are never committed to this repository. A kernel name
+// that starts with ./ or ../ is instead a path relative to the config file,
+// which is how small synthetic test kernels kept in this repository are named.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, resolve, basename } from 'node:path';
 import { createSpiceEngine } from 'cspice-wasm';
+import { sclkTimePieces } from './sclk-time.mjs';
+import { sliceOrbit } from './orbit-model.mjs';
 
 export const SLICER_VERSION = '0.1.0';
 
@@ -199,7 +203,7 @@ function buildBlob(model) {
 
 const vec = (p) => [p.x, p.y, p.z];
 
-async function sliceEphem(spice, spec, window, parentId) {
+export async function sliceEphem(spice, spec, window, parentId) {
   const [t0, t1] = window;
   const dt = spec.interval;
   const n = spec.degree;
@@ -302,16 +306,21 @@ async function sliceOrient(spice, spec, window) {
   };
 }
 
-export async function slice(config, kernelDir) {
+export async function slice(config, kernelDir, configDir = kernelDir) {
   const spice = await createSpiceEngine();
   const kernels = [];
+  const kernelBytes = [];
   for (const k of config.kernels) {
-    const bytes = new Uint8Array(readFileSync(resolve(kernelDir, k)));
+    const bytes = new Uint8Array(readFileSync(resolve(/^\.\.?\//.test(k) ? configDir : kernelDir, k)));
+    kernelBytes.push(bytes);
     await spice.furnsh(basename(k), bytes);
     kernels.push({ name: basename(k), sha256: createHash('sha256').update(bytes).digest('hex') });
   }
   const et = async (utc) => spice.str2et(utc);
   const window = [await et(config.window.start), await et(config.window.stop)];
+  // Synthetic test trajectories (tools/synth-orbiter.mjs): integrated here, written
+  // to an SPK in the engine, and from then on read through CSPICE like any kernel.
+  for (const s of config.synthetic ?? []) kernels.push(await (await import('./synth-orbiter.mjs')).furnishSynthetic(spice, s, window));
 
   const bodies = [...config.bodies].sort((a, b) => a.id - b.id);
   const indexOf = new Map(bodies.map((b, i) => [b.id, i]));
@@ -330,7 +339,7 @@ export async function slice(config, kernelDir) {
   for (const b of bodies) {
     if (b.parentIndex === -1 || b.noSegment) continue;
     const w = b.window ? [await et(b.window.start), await et(b.window.stop)] : window;
-    const seg = await sliceEphem(spice, b, w, b.parent);
+    const seg = b.model === 'orbit' ? await sliceOrbit(spice, b, w, b.parent) : await sliceEphem(spice, b, w, b.parent);
     ephem.push(seg);
     coverage = [Math.max(coverage[0], seg.tStart), Math.min(coverage[1], seg.tStart + seg.recordCount * seg.interval)];
   }
@@ -349,9 +358,21 @@ export async function slice(config, kernelDir) {
   }
   sites.sort((a, b) => a.id - b.id);
 
-  const time = (config.time ?? []).map((t) => ({
-    base: t.base, hostStart: t.hostStart, etStart: window[0] + (t.etOffset ?? 0), rate: t.rate ?? 1,
-  })).sort((a, b) => a.base - b.base || a.hostStart - b.hostStart);
+  // TIME pieces: an entry that names a spacecraft clock ("sclk") is derived from
+  // the SCLK kernel within its tolerance (tools/sclk-time.mjs); any other entry
+  // is one explicit piece, written as given.
+  const time = [];
+  const timeFit = [];
+  for (const t of config.time ?? []) {
+    if (t.sclk !== undefined) {
+      const derived = await sclkTimePieces(spice, kernelBytes, t, window);
+      time.push(...derived.pieces);
+      timeFit.push(derived.fit);
+    } else {
+      time.push({ base: t.base, hostStart: t.hostStart, etStart: window[0] + (t.etOffset ?? 0), rate: t.rate ?? 1 });
+    }
+  }
+  time.sort((a, b) => a.base - b.base || a.hostStart - b.hostStart);
 
   const created = config.created ? await et(config.created) : window[0];
   const report = {
@@ -365,6 +386,10 @@ export async function slice(config, kernelDir) {
     ephem: report.ephem.map((s) => ({ target: s.target, center: s.center, maxPosErrKm: s.maxPosErr, maxVelErrKmS: s.maxVelErr })),
     orient: report.orient.map((s) => ({ body: s.body, maxErrRad: s.maxErr })),
   };
+  if (timeFit.length) {
+    report.timeFit = timeFit;
+    prov.time = timeFit.map((f) => ({ base: f.base, sclk: f.sclk, pieces: f.pieces, toleranceS: f.toleranceSeconds, maxErrS: f.maxErrSeconds }));
+  }
   const rootIsSsb = roots[0].id === 0;
   const blob = buildBlob({ time, bodies, ephem, orient, sites, prov, flags: rootIsSsb ? 1 : 0, created, coverage });
   report.bytes = blob.length;
@@ -380,7 +405,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   const kernelDir = process.env.SPICE_LITE_KERNELS ?? resolve(dirname(resolve(configPath)), 'kernels');
-  const { blob, report } = await slice(config, kernelDir);
+  const { blob, report } = await slice(config, kernelDir, dirname(resolve(configPath)));
   writeFileSync(outPath, blob);
   if (reportPath) writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n');
   console.log(`${outPath}: ${blob.length} bytes`);
@@ -389,5 +414,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
   for (const s of report.orient) {
     console.log(`  orient ${s.body}: ${s.recordCount} records, degree ${s.degree}, ${s.bytes} bytes, max error ${s.maxErr.toExponential(2)} rad`);
+  }
+  for (const f of report.timeFit ?? []) {
+    console.log(`  time base ${f.base} from clock ${f.sclk}: ${f.pieces} pieces, max error ${f.maxErrSeconds.toExponential(2)} s (tolerance ${f.toleranceSeconds.toExponential(2)} s)`);
   }
 }

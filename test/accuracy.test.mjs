@@ -184,5 +184,5 @@ test('requests outside the blob get status codes, not answers', { skip }, async 
   assert.equal(api.state(301, 399, w0 + 10, 3).status, 6);
   assert.equal(api.orient(10, w0 + 10).status, 2);
   assert.equal(api.siteView(1, 10, w0 + 10, 1).status, 5);
-  assert.equal(api.exports.lite_sub_point(301, 399, w0, 0, 0, 0), 5);
+  assert.equal(api.exports.lite_sub_point(301, 399, w0, 0, 0, 0), 6);
 });

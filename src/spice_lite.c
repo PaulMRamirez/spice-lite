@@ -49,6 +49,12 @@
 #define TWO_PI 6.28318530717958647692
 #define TRIG_LIMIT 1.0e6
 
+/* EPHEM kind 4, the compact orbit model: record size, the largest squared
+ * eccentricity it accepts (0.9 squared), and the cap on Kepler iterations. */
+#define ORBIT_REC 104u
+#define ORBIT_E2_MAX 0.81
+#define ORBIT_KEPLER_MAX 12
+
 typedef struct {
     uint32_t off;
     uint32_t count;
@@ -89,6 +95,13 @@ static double rdf64(const uint8_t *p)
     double d;
     __builtin_memcpy(&d, p, 8);
     return d;
+}
+
+static double rdf32(const uint8_t *p)
+{
+    float f;
+    __builtin_memcpy(&f, p, 4);
+    return (double)f;
 }
 
 static int finite64(double x) { return (x - x) == 0.0; }
@@ -505,6 +518,9 @@ static uint32_t ephem_rec_size(uint32_t kind, uint32_t degree)
     if (kind == 2u) {
         return 6u * (degree + 1u) * 8u;
     }
+    if (kind == 4u) {
+        return ORBIT_REC;
+    }
     return 48u; /* kind 3 */
 }
 
@@ -645,10 +661,11 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
         if (!finite64(t0) || !finite64(dt) || !(dt > 0.0)) {
             return 0;
         }
-        if (kind < 1u || kind > 3u) {
+        if (kind < 1u || kind > 4u) {
             continue; /* unknown kind: queries that need it report unsupported */
         }
-        if (degree > MAX_DEGREE || count == 0u || (kind == 3u && count < 2u)) {
+        if (degree > MAX_DEGREE || count == 0u || (kind == 3u && count < 2u) ||
+            (kind == 4u && degree != 0u)) {
             return 0;
         }
         if (!records_ok(rd32(e + 32), count, ephem_rec_size(kind, degree), total)) {
@@ -804,6 +821,126 @@ static int grid_locate(double t, double t0, double dt, uint32_t count, uint32_t 
     return 1;
 }
 
+/* Kind 4: one record of the compact orbit model at tau seconds from the
+ * record's mid epoch. The record holds six elements (semi-major axis, the
+ * eccentricity vector in the orbit plane measured from the ascending node,
+ * inclination, node, and mean argument of latitude), their rates, and six
+ * coefficients of corrections in twice the argument of latitude: the form of
+ * the GPS broadcast ephemeris, regular at zero eccentricity. The velocity is
+ * the exact time derivative of the position formula, so the record needs no
+ * gravitational parameter. Ellipses only: an eccentricity over 0.9, a
+ * semi-major axis that is not positive, or an angle too large for the
+ * trigonometry returns LITE_UNSUPPORTED. Every divisor below is bounded away
+ * from zero by those checks, and the Kepler loop is capped. */
+static int sincos_near(double x, double *s, double *c)
+{
+    if (lite_fabs(x) <= 0.78) { /* inside the kernel's range: no reduction */
+        sincos_kernel(x, s, c);
+        return 0;
+    }
+    return lite_sincos(x, s, c);
+}
+
+static int eval_orbit(const uint8_t *p, double tau, double *s)
+{
+    double a1 = rdf32(p + 56), ex1 = rdf32(p + 60), ey1 = rdf32(p + 64);
+    double inc1 = rdf32(p + 68), node1 = rdf32(p + 72), lam2 = rdf32(p + 76);
+    double cuc = rdf32(p + 80), cus = rdf32(p + 84), crc = rdf32(p + 88);
+    double crs = rdf32(p + 92), cic = rdf32(p + 96), cis = rdf32(p + 100);
+    double lam1 = rdf64(p + 48);
+    double a = rdf64(p) + a1 * tau;
+    double ex = rdf64(p + 8) + ex1 * tau;
+    double ey = rdf64(p + 16) + ey1 * tau;
+    double inc = rdf64(p + 24) + inc1 * tau;
+    double node = rdf64(p + 32) + node1 * tau;
+    double lam = rdf64(p + 40) + (lam1 + lam2 * tau) * tau;
+    double lam_dot = lam1 + 2.0 * lam2 * tau;
+    double e2 = ex * ex + ey * ey;
+    double sl, cl, ka, kb, g = 0.0, sg = 0.0, cg = 1.0, d;
+    double sf, cf, rho, f_dot, w, beta, beta_dot, dd, dd_dot;
+    double xn, yn, xn_dot, yn_dot, r, r_dot, cu, su, u_dot, c2, s2, two_u;
+    double du, dr, di, uc_dot, rc_dot, ic_dot, sd, cd, cuc2, suc2, rc;
+    double xp, yp, xp_dot, yp_dot, si, ci, so, co, x, y;
+    int it, done = 0;
+    if (!(a > 0.0) || !finite64(a) || !(e2 <= ORBIT_E2_MAX)) {
+        return LITE_UNSUPPORTED;
+    }
+    if (lite_sincos(lam, &sl, &cl)) {
+        return LITE_UNSUPPORTED;
+    }
+    /* Kepler's equation, F - ex sin F + ey cos F = lam, solved by Newton steps
+     * for the offset G = F - lam, which satisfies G = ka cos G + kb sin G. A
+     * step under 1e-8 is the last: the iteration converges quadratically, so
+     * the error left is below rounding, and so small a step turns the sine and
+     * cosine to first order without another evaluation. */
+    ka = ex * sl - ey * cl;
+    kb = ex * cl + ey * sl;
+    for (it = 0; it < ORBIT_KEPLER_MAX && !done; it++) {
+        d = (g - (ka * cg + kb * sg)) / (1.0 + (ka * sg - kb * cg));
+        g -= d;
+        if (lite_fabs(d) <= 1.0e-8) {
+            double sg0 = sg;
+            sg = sg - cg * d;
+            cg = cg + sg0 * d;
+            done = 1;
+        } else if (sincos_near(g, &sg, &cg)) {
+            return LITE_UNSUPPORTED;
+        }
+    }
+    if (!done) {
+        return LITE_UNSUPPORTED;
+    }
+    sf = sl * cg + cl * sg;
+    cf = cl * cg - sl * sg;
+    rho = 1.0 - (ex * cf + ey * sf);
+    f_dot = (lam_dot + (ex1 * sf - ey1 * cf)) / rho;
+    /* position in the orbit plane, in units of a, x toward the node */
+    w = lite_sqrt(1.0 - e2);
+    beta = 1.0 / (1.0 + w);
+    beta_dot = ((ex * ex1 + ey * ey1) * beta * beta) / w;
+    dd = ey * cf - ex * sf;
+    dd_dot = (ey1 * cf - ex1 * sf) - (ey * sf + ex * cf) * f_dot;
+    xn = (cf - ex) - beta * ey * dd;
+    yn = (sf - ey) + beta * ex * dd;
+    xn_dot = (-sf * f_dot - ex1) - ((beta_dot * ey + beta * ey1) * dd + beta * ey * dd_dot);
+    yn_dot = (cf * f_dot - ey1) + ((beta_dot * ex + beta * ex1) * dd + beta * ex * dd_dot);
+    r = a * rho;
+    r_dot = a1 * rho - a * ((ex1 * cf + ey1 * sf) + dd * f_dot);
+    /* argument of latitude u, and the corrections in 2u */
+    cu = xn / rho;
+    su = yn / rho;
+    u_dot = (xn * yn_dot - yn * xn_dot) / (rho * rho);
+    c2 = cu * cu - su * su;
+    s2 = 2.0 * cu * su;
+    du = cuc * c2 + cus * s2;
+    dr = crc * c2 + crs * s2;
+    di = cic * c2 + cis * s2;
+    two_u = 2.0 * u_dot;
+    uc_dot = u_dot + two_u * (cus * c2 - cuc * s2);
+    rc_dot = r_dot + two_u * (crs * c2 - crc * s2);
+    ic_dot = inc1 + two_u * (cis * c2 - cic * s2);
+    if (sincos_near(du, &sd, &cd) || lite_sincos(inc + di, &si, &ci) ||
+        lite_sincos(node, &so, &co)) {
+        return LITE_UNSUPPORTED;
+    }
+    cuc2 = cu * cd - su * sd;
+    suc2 = su * cd + cu * sd;
+    rc = r + dr;
+    xp = rc * cuc2;
+    yp = rc * suc2;
+    xp_dot = rc_dot * cuc2 - yp * uc_dot;
+    yp_dot = rc_dot * suc2 + xp * uc_dot;
+    x = xp * co - yp * ci * so;
+    y = xp * so + yp * ci * co;
+    s[0] = x;
+    s[1] = y;
+    s[2] = yp * si;
+    s[3] = (xp_dot * co - yp_dot * ci * so) + yp * si * so * ic_dot - y * node1;
+    s[4] = (xp_dot * so + yp_dot * ci * co) - yp * si * co * ic_dot + x * node1;
+    s[5] = yp_dot * si + yp * ci * ic_dot;
+    return LITE_OK;
+}
+
 /* Evaluates one EPHEM entry at t. Returns a status. */
 static int eval_ephem(const uint8_t *e, double t, double *s)
 {
@@ -865,6 +1002,12 @@ static int eval_ephem(const uint8_t *e, double t, double *s)
             s[i + 3] = (g00 * p0 + g01 * p1) / dt + g10 * v0 + g11 * v1;
         }
         return LITE_OK;
+    }
+    if (kind == 4u) {
+        if (!grid_locate(t, t0, dt, count, &k, &x)) {
+            return LITE_OUT_OF_COVERAGE;
+        }
+        return eval_orbit(data + (uint64_t)k * ORBIT_REC, 0.5 * dt * x, s);
     }
     return LITE_UNSUPPORTED;
 }
@@ -1317,23 +1460,221 @@ int lite_site_view(int32_t site, int32_t target, double et, int32_t corr, double
     return LITE_OK;
 }
 
+/* ---- sub-points and occultation ----------------------------------------- */
+
+#define NEAR_ITER_MAX 24
+
+/* Reads the three radii of a body. Returns 0 when the blob gives none (BODY
+ * flag bit 0 clear) or any of them is not positive. */
+static int body_radii(int idx, double *r)
+{
+    int k;
+    if ((body_flags(idx) & 1u) == 0u) {
+        return 0;
+    }
+    for (k = 0; k < 3; k++) {
+        r[k] = rdf64(body_at(idx) + 8 + 8u * (uint32_t)k);
+        if (!(r[k] > 0.0)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Nearest point q on the ellipsoid with semi-axes r to a point p on or outside
+ * it, and the distance h between them; all in the body-fixed frame. Returns 0
+ * on success, 1 when p is inside the ellipsoid, 2 when the arithmetic left the
+ * finite range.
+ *
+ * The nearest point is q[k] = r[k]^2 p[k] / (r[k]^2 + t), where t >= 0 is the
+ * root of F(t) = sum (r[k] p[k] / (r[k]^2 + t))^2 - 1. F is convex and
+ * decreasing for t >= 0, so Newton's method started at a point where F >= 0
+ * climbs to the root without passing it. Two starting points are tried. The
+ * first, max over k of r[k] (|p[k]| - r[k]), never lies beyond the root and
+ * leaves F <= 2, which bounds the work. The second, rmin (|p| - rmin), is the
+ * exact root for a sphere and close to it for a distant observer of any
+ * shape; it is used when F there is not negative beyond rounding. The loop
+ * stops when F is at the rounding level of its own evaluation (1e-15) or t
+ * stops rising. Four million random cases with axis ratios up to a million
+ * needed at most 12 iterations; a case that reaches NEAR_ITER_MAX is reported
+ * as status 2 rather than answered loosely. */
+static int near_point(const double *r, const double *p, double *q, double *h)
+{
+    double a2[3], w[3], t = 0.0, tc, f, g, pn, rmin, d2;
+    int k, it;
+    f = -1.0;
+    for (k = 0; k < 3; k++) {
+        double u = p[k] / r[k];
+        double lo = r[k] * (lite_fabs(p[k]) - r[k]);
+        f += u * u;
+        a2[k] = r[k] * r[k];
+        w[k] = r[k] * p[k];
+        if (lo > t) {
+            t = lo;
+        }
+    }
+    if (!finite64(f)) {
+        return 2;
+    }
+    if (f < 0.0) {
+        return 1;
+    }
+    rmin = r[0] < r[1] ? r[0] : r[1];
+    rmin = rmin < r[2] ? rmin : r[2];
+    pn = norm3(p);
+    tc = rmin * (pn - rmin);
+    if (tc > t) {
+        f = -1.0;
+        for (k = 0; k < 3; k++) {
+            double u = w[k] / (a2[k] + tc);
+            f += u * u;
+        }
+        if (f >= -1.0e-15) {
+            t = tc;
+        }
+    }
+    for (it = 0; it < NEAR_ITER_MAX; it++) {
+        double tn;
+        f = -1.0;
+        g = 0.0;
+        for (k = 0; k < 3; k++) {
+            double s = a2[k] + t;
+            double u = w[k] / s;
+            f += u * u;
+            g += u * u / s;
+        }
+        if (!(f > 1.0e-15) || !(g > 0.0)) {
+            break; /* converged, or not a number */
+        }
+        tn = t + f / (2.0 * g);
+        if (!(tn > t)) {
+            break;
+        }
+        t = tn;
+    }
+    if (it == NEAR_ITER_MAX) {
+        return 2;
+    }
+    d2 = 0.0;
+    for (k = 0; k < 3; k++) {
+        double s = a2[k] + t;
+        double u = p[k] / s;
+        q[k] = a2[k] * u;
+        d2 += u * u;
+    }
+    *h = t * lite_sqrt(d2);
+    if (!finite64(q[0]) || !finite64(q[1]) || !finite64(q[2]) || !finite64(*h)) {
+        return 2;
+    }
+    return 0;
+}
+
 int lite_sub_point(int32_t body, int32_t observer, double et, double *lon, double *lat, double *alt)
 {
-    (void)body;
-    (void)observer;
-    (void)et;
-    (void)lon;
-    (void)lat;
-    (void)alt;
-    return G.ready ? LITE_UNSUPPORTED : LITE_BAD_BLOB;
+    double rot[9], s[6], r[3], p[3], q[3], h = 0.0;
+    int bi, oi, st, k;
+    if (!G.ready) {
+        return LITE_BAD_BLOB;
+    }
+    if (lon == 0 || lat == 0 || alt == 0 || !finite64(et)) {
+        return LITE_BAD_ARG;
+    }
+    bi = body_index(body);
+    oi = body_index(observer);
+    if (bi < 0 || oi < 0) {
+        return LITE_NO_PATH;
+    }
+    if (!body_radii(bi, r)) {
+        return LITE_UNSUPPORTED;
+    }
+    st = lite_orient(body, et, rot);
+    if (st != LITE_OK) {
+        return st;
+    }
+    st = state_rel(oi, bi, et, 1, s, 0);
+    if (st != LITE_OK) {
+        return st;
+    }
+    for (k = 0; k < 3; k++) {
+        p[k] = rot[3 * k] * s[0] + rot[3 * k + 1] * s[1] + rot[3 * k + 2] * s[2];
+    }
+    st = near_point(r, p, q, &h);
+    if (st != 0) {
+        return st == 1 ? LITE_BAD_ARG : LITE_UNSUPPORTED;
+    }
+    *lon = lite_atan2(q[1], q[0]);
+    *lat = lite_atan2(q[2], lite_sqrt(q[0] * q[0] + q[1] * q[1]));
+    *alt = h;
+    return LITE_OK;
 }
 
 int lite_occulted(int32_t target, int32_t by, int32_t observer, double et, int32_t *code)
 {
-    (void)target;
-    (void)by;
-    (void)observer;
-    (void)et;
-    (void)code;
-    return G.ready ? LITE_UNSUPPORTED : LITE_BAD_BLOB;
+    double rt[3], rf[3], b[6], f[6], c[3];
+    double rb, rfm, pb, pf, ab, af, sep;
+    int ti, fi, oi, st;
+    if (!G.ready) {
+        return LITE_BAD_BLOB;
+    }
+    if (code == 0 || !finite64(et)) {
+        return LITE_BAD_ARG;
+    }
+    ti = body_index(target);
+    fi = body_index(by);
+    oi = body_index(observer);
+    if (ti < 0 || fi < 0 || oi < 0) {
+        return LITE_NO_PATH;
+    }
+    if (ti == fi) {
+        return LITE_BAD_ARG;
+    }
+    if (!body_radii(ti, rt) || !body_radii(fi, rf)) {
+        return LITE_UNSUPPORTED;
+    }
+    st = state_rel(ti, oi, et, 1, b, 0);
+    if (st != LITE_OK) {
+        return st;
+    }
+    st = state_rel(fi, oi, et, 1, f, 0);
+    if (st != LITE_OK) {
+        return st;
+    }
+    /* Each body is a sphere of its mean radius. pb and pf are the squared
+     * lengths of the tangents from the observer to the two spheres. */
+    rb = (rt[0] + rt[1] + rt[2]) / 3.0;
+    rfm = (rf[0] + rf[1] + rf[2]) / 3.0;
+    pb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]) - rb * rb;
+    pf = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]) - rfm * rfm;
+    if (!finite64(pb) || !finite64(pf)) {
+        return LITE_UNSUPPORTED;
+    }
+    if (!(pb > 0.0) || !(pf > 0.0)) {
+        return LITE_BAD_ARG; /* the observer is on or inside one of the spheres */
+    }
+    /* The tangent lengths differ by the observer's distance from the plane
+     * that separates two disjoint spheres, so the shorter tangent belongs to
+     * the sphere every shared line of sight meets first. */
+    if (!(pf < pb)) {
+        *code = LITE_OCC_NONE;
+        return LITE_OK;
+    }
+    ab = lite_atan2(rb, lite_sqrt(pb));
+    af = lite_atan2(rfm, lite_sqrt(pf));
+    c[0] = f[1] * b[2] - f[2] * b[1];
+    c[1] = f[2] * b[0] - f[0] * b[2];
+    c[2] = f[0] * b[1] - f[1] * b[0];
+    sep = lite_atan2(norm3(c), f[0] * b[0] + f[1] * b[1] + f[2] * b[2]);
+    if (!finite64(sep)) {
+        return LITE_UNSUPPORTED;
+    }
+    if (!(sep < af + ab)) {
+        *code = LITE_OCC_NONE;
+    } else if (af >= ab && sep <= af - ab) {
+        *code = LITE_OCC_FULL;
+    } else if (ab > af && sep <= ab - af) {
+        *code = LITE_OCC_ANNULAR;
+    } else {
+        *code = LITE_OCC_PARTIAL;
+    }
+    return LITE_OK;
 }

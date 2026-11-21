@@ -40,12 +40,22 @@ jobs:
           bash scripts/build-wasm.sh
           bash scripts/build-native.sh
           node scripts/check-wasm-mvp.mjs build/spice_lite.wasm
-      - name: Tests (exactness, accuracy against CSPICE, robustness)
+      - name: Build the demonstration sequence and the SpaceWasm host harness
+        run: |
+          bash scripts/build-sequence.sh
+          node scripts/check-wasm-mvp.mjs build/sun_watch.wasm
+          pnpm build:host
+      - name: Tests (exactness, accuracy against CSPICE, robustness, the sequence end to end)
         run: pnpm test
       - name: Cost under SpaceWasm stays within the ceilings in SPEC.md
         run: node scripts/measure-cost.mjs
+      - name: Cost of the compact orbit segment under SpaceWasm
+        run: node scripts/measure-cost-orbit.mjs
       - name: The committed blob and vectors are reproducible
         run: |
           pnpm slice
           node tools/make-vectors.mjs
+          pnpm slice:orbiter
+          pnpm slice:geometry
+          node tools/make-vectors-geometry.mjs
           git diff --exit-code -- test/blobs test/vectors
