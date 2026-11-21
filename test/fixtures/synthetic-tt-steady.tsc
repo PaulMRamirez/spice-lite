@@ -1,0 +1,24 @@
+KPL/SCLK
+
+SYNTHETIC spacecraft clock kernel for spice-lite tests. This is not a real
+mission clock and must never be used for anything but testing. It was written
+by hand for test/sclk.test.mjs as the plainest clock that still needs more
+than one linear piece: one partition and one coefficient record at a rate of
+exactly one, running on TT (time system 2), so the only thing between the
+clock and ET is the periodic TDB minus TT term.
+
+Clock -903 has two fields: a count of nominal seconds and a count of 1/65536
+second. Zero is at J2000 TT.
+
+\begindata
+SCLK_KERNEL_ID            = ( @2026-11-20T00:00:00 )
+SCLK_DATA_TYPE_903        = ( 1 )
+SCLK01_TIME_SYSTEM_903    = ( 2 )
+SCLK01_N_FIELDS_903       = ( 2 )
+SCLK01_MODULI_903         = ( 4294967296 65536 )
+SCLK01_OFFSETS_903        = ( 0 0 )
+SCLK01_OUTPUT_DELIM_903   = ( 1 )
+SCLK_PARTITION_START_903  = ( 0.0000000000000E+00 )
+SCLK_PARTITION_END_903    = ( 2.8147497671065E+14 )
+SCLK01_COEFFICIENTS_903   = ( 0.0000000000000E+00  0.0000000000000E+00  1.0000000000000E+00 )
+\begintext

@@ -83,7 +83,7 @@ A section type appears at most once.
 
 ### TIME
 
-Each entry maps a stretch of the host clock to ET with a straight line: `et = et_start + rate * (host - host_start)`. The slicer is expected to fold spacecraft clock coefficients, leap seconds, and the periodic TDB term into these pieces. The reference slicer does not do that yet; it writes the pieces its configuration gives it.
+Each entry maps a stretch of the host clock to ET with a straight line: `et = et_start + rate * (host - host_start)`. The slicer folds spacecraft clock coefficients, leap seconds, and the periodic TDB term into these pieces, so the library only ever evaluates one line. How the reference slicer derives them, and what a host reading must mean for that to work, is under "Pieces from a spacecraft clock kernel" below.
 
 | Offset | Size | Field | Meaning |
 | --- | --- | --- | --- |
@@ -93,7 +93,35 @@ Each entry maps a stretch of the host clock to ET with a straight line: `et = et
 | 16 | 8 | `et_start` | ET at `host_start` |
 | 24 | 8 | `rate` | ET seconds per host second |
 
-A reading uses the piece with the same base and the latest `host_start` not after it. Host seconds are whole seconds plus microseconds as one 64-bit float, which is exact for any 32-bit second count.
+A reading uses the piece with the same base and the latest `host_start` not after it. A piece has no end: it answers until the next piece of its base begins, and the last one is extended in a straight line past the blob's window. A reading below every piece of its base is out of coverage. Host seconds are whole seconds plus microseconds as one 64-bit float, formed as `seconds + microseconds * 1e-6`; every microsecond reading of a 32-bit second count gives a distinct value, but above 2^30 seconds the float resolves only 0.24 microseconds (0.48 above 2^31).
+
+#### Pieces from a spacecraft clock kernel
+
+A slicer configuration gives TIME entries in two forms. The explicit form, `{ "base": 3, "hostStart": 0, "etOffset": 0, "rate": 1.0 }`, is one piece written as given, with `etOffset` measured from the window start. The clock form, `{ "base": 3, "sclk": -82, "maxErrorSeconds": 1e-6 }`, names a spacecraft clock by its NAIF code and a tolerance, and the slicer (`tools/sclk-time.mjs`) derives the pieces from the SCLK kernel among the configured kernels. Optional members are `maxPieces` (default 256) and `partition` (a single partition number, counted from 1).
+
+**What a host reading means.** For the clock form, host seconds are the spacecraft clock's own count: the value of its most significant field, with the lesser fields as a fraction of one count carried in the microseconds. In SPICE terms, host seconds are `ticks / ticks_per_count`, where `ticks` is the reading as the SCLK kernel counts it within its partition (field values less their offsets, the unit of `SCLK_PARTITION_START` and `SCLK_PARTITION_END`) and `ticks_per_count` is the product of every modulus but the first. For the usual clock whose first field counts nominal seconds this is the clock count in seconds measured from the clock's zero, which is what an F Prime deployment reports as an `Fw::Time` with base `TB_SC_TIME` (3) when its time source is that counter. The reading carries no partition number.
+
+**Limits of that convention.**
+
+- A clock count of 2^32 or more does not fit the seconds field, and the slicer refuses a window that needs one.
+- The flight software must turn the sub-count fields into microseconds itself. A tick that is not a whole number of microseconds (1/256 of a count is 3,906.25) is rounded by the host, an error of up to half a microsecond of clock time that the blob cannot see and its declared error does not include.
+- Encoded SCLK, which SPICE uses internally, runs on through partition boundaries; the clock's own count does not, and the count is what the host has. The slicer therefore maps each partition separately and always starts a new piece at a partition boundary.
+- One time base can cover several partitions only if no reading inside the window occurs in two of them, because a piece is selected by the reading alone. A clock that was set forward satisfies this. A clock that was reset to a count it had already shown does not, and the slicer refuses it; the mission then gives each partition its own entry (with `partition`) under its own time base and has the flight software report the base that matches the clock's current partition, or cuts one blob per partition.
+- Between two partitions that share a base there are counts the clock never showed. The library answers them anyway, by extending the earlier partition's last line; nothing in the blob marks them as invalid.
+- A mission whose flight software reports time some other way (seconds from a mission epoch, a count already corrected onboard, a field layout that is not count plus fraction) must not use the clock form. It computes its own pieces on the ground and gives them in the explicit form.
+
+**How the pieces are cut.** The truth is CSPICE: each reading is converted to encoded SCLK and then to ET with `sct2e`, which applies the kernel's coefficients, its time system (TDB or TT), and through the leapseconds kernel the periodic TDB term. A new piece always starts at the window's first reading, at each partition boundary, and at the first reading at or after each coefficient record (where the rate changes and the time may step). Every `host_start` is a whole microsecond reading formed the way the library forms it, so a reading on a boundary selects the same piece on every host. Between those points each piece is made as long as its line allows: the line has the slope of the chord between the piece's ends and is shifted to halve its largest residual, and the piece grows until that residual reaches nine tenths of the tolerance. The slicer then measures every piece against CSPICE at 2,049 readings including both ends, with the library's own arithmetic; a piece over the tolerance is cut again more finely, and if the tolerance still cannot be met, or more than `maxPieces` pieces would be needed, the slicer fails and writes no blob. The tolerance, the measured worst error, and the piece count are recorded in the slicer's report (`timeFit`) and in PROV (`time`). The TIME entries themselves carry no error field.
+
+What limits a piece's length, once the clock's own rate changes are split out, is the periodic difference between TDB and TT (about 1.7 milliseconds in amplitude, with a period of a year) for a clock kept on TT; a clock kept on TDB has no such term. Measured on the test clocks (`test/sclk.test.mjs`; all but the first are synthetic kernels in `test/fixtures`), over 30 days:
+
+| Clock | Window start | Pieces at 1 microsecond | Worst error | Pieces at 1 millisecond | Worst error |
+| --- | --- | --- | --- | --- | --- |
+| cassini-demo (TDB, one rate) | 2004-06-27 | 1 | 0.03 microseconds | 1 | 0.03 microseconds |
+| Steady clock on TT | 2004-06-27, where the periodic term bends least | 2 | 0.89 microseconds | 1 | 3.6 microseconds |
+| Steady clock on TT | 2004-03-20, where it bends most | 6 | 0.92 microseconds | 1 | 27 microseconds |
+| Four rates, a 4 ms step, two partitions, on TT | 2004-06-27 | 6 | 0.92 microseconds | 5 | 0.98 microseconds |
+
+The errors are multiples of 0.03 microseconds because that is the spacing of 64-bit ET values in 2004; a tolerance near that spacing cannot be met with any number of pieces. The library scans every TIME entry on each conversion, so the cost grows with the piece count: under SpaceWasm, 83 instructions with one piece, up to 248 with the six pieces of `test/blobs/sclk-drift.slb`, and up to 898 with 26, or roughly 60 plus 33 per piece. The 500-instruction ceiling for a time conversion holds to about a dozen pieces.
 
 ### BODY
 
@@ -171,7 +199,7 @@ Sites need an ORIENT segment for their body.
 
 ### PROV
 
-PROV is UTF-8 JSON, padded with spaces to an 8-byte boundary. It lists each source kernel with its SHA-256, the slicer version, the window, and the fit errors per segment. The flight library never reads it, and a mission may strip it before uplink (and must then rewrite the directory, the identifier, and the CRC).
+PROV is UTF-8 JSON, padded with spaces to an 8-byte boundary. It lists each source kernel with its SHA-256, the slicer version, the window, the fit errors per segment, and for TIME pieces derived from a spacecraft clock their tolerance and measured worst error. The flight library never reads it, and a mission may strip it before uplink (and must then rewrite the directory, the identifier, and the CRC).
 
 ## Spacecraft state
 
@@ -300,7 +328,7 @@ The slicer is not trusted to grade itself. It writes its fit errors into the blo
 
 1. **Name.** spice-lite is kept for now. Whether a project that is not NAIF's should carry the SPICE name has been put to NAIF; the answer may force a rename.
 2. **Stellar aberration in 0.1.** It is implemented. Whether its dependence on observer velocity accuracy makes it worth keeping for spacecraft observers is open.
-3. **Host time bases.** The TIME section assumes one linear map per time base. Spacecraft clock partitions or resets may need more, and the slicer does not yet derive the pieces from an SCLK kernel.
+3. **Host time bases.** The slicer now derives the pieces from an SCLK kernel under one stated convention (host seconds are the clock's own count; see TIME). Still open: whether that convention matches what real F Prime deployments put in `TB_SC_TIME`; whether a clock reset should be handled by a second time base, as now, or by a partition number carried in the F Prime time context byte, which `lite_fwtime2et` ignores today; whether the TIME entries should carry their own error bound and an end, so that counts the clock never showed are refused; and whether entries should be required sorted so the library can search instead of scan when a long window needs many pieces. Only type 1 SCLK kernels are read, and the clock's structure is parsed from the kernel text because cspice-wasm does not bind `scpart` or the kernel pool readers.
 4. **Compact orbit segment.** Which model, and how its error is bounded.
 5. **Checksum.** CRC-32 is the draft choice and it dominates start-up: 20.8 interpreter instructions per byte with the default 1 KiB table, against two to three thousand instructions in total with the check skipped. A Fletcher-style sum over 32-bit words measured at 5.8 instructions per byte with no table, but detects fewer error patterns and would change the format. Whether to keep CRC-32, switch, or rely on uplink integrity is open.
 6. **Real memory configuration.** The one-page target assumes a mission will grant a sequence 64 KiB.
