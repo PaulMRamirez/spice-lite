@@ -13,13 +13,27 @@
 //! `--base` is the guest address to place the blob at (the module's `__heap_base`,
 //! rounded up to 8). The module must declare enough memory to hold the blob and a
 //! small scratch area after it.
+//!
+//! A second mode runs a whole sequence the way the F Prime WasmSequencer would:
+//!
+//!   spice-lite-spacewasm-host --sequence --module <wasm> --start-seconds <n>
+//!
+//! It binds stand-ins for the sequencer's `fprime_v1` host calls (time, event, cmd,
+//! rsleep, exit) over a simulated spacecraft clock, invokes the module's `main`, and
+//! prints one JSON line per event, command, and sleep, each with the exact number of
+//! instructions the guest executed since the previous sleep. A sleep pauses the
+//! interpreter, as it does in the sequencer, and the simulated clock jumps forward by
+//! the requested amount before the guest resumes.
 
 use spacewasm::{
-    CodeBuilder, CompilerOptions, ControlFrame, DecoderStack, Engine, ExportDesc, InnerVec,
-    Interpreter, InterpreterResult, InterpreterRunner, Module, ModuleRef, OperandType, Ref, Value,
-    WasmMemoryAllocator, WasmRef, WasmStream,
+    CodeBuilder, CompilerOptions, ControlFrame, DecoderStack, Engine, ExportDesc, HostFunction,
+    HostFunctionBreak, HostModule, InnerVec, Interpreter, InterpreterResult, InterpreterRunner,
+    Module, ModuleRef, OperandType, Ref, Value, WasmMemoryAllocator, WasmRef, WasmStream,
 };
 use std::alloc::Layout;
+use std::cell::{Cell, RefCell};
+use std::ops::ControlFlow;
+use std::rc::Rc;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -130,11 +144,11 @@ struct Host {
 }
 
 impl Host {
-    fn load(bytes: &[u8]) -> Res<(Host, usize, usize)> {
+    fn load(bytes: &[u8], host_modules: spacewasm::Vec<HostModule>) -> Res<(Host, usize, usize)> {
         let heap_before = HEAP_LIVE.load(Ordering::Relaxed);
         let mut code = CodeBuilder::new(CompilerOptions::new(false, None, MAX_CODE_PAGES))
             .map_err(|err| format!("could not allocate the code pages: {err:?}"))?;
-        let mut engine = Engine::new(STACK_WORDS, 1, spacewasm::vec![])
+        let mut engine = Engine::new(STACK_WORDS, 1, host_modules)
             .map_err(|err| format!("could not create the interpreter: {err:?}"))?;
         let memory = spacewasm::Rc::new(LinearMemory)
             .map_err(|err| format!("out of memory: {err:?}"))?
@@ -219,14 +233,181 @@ fn arg<'a>(args: &'a [String], name: &str) -> Res<&'a str> {
         .ok_or_else(|| format!("missing {name}").into())
 }
 
+/// What the stand-in host calls share: the simulated spacecraft clock, the running
+/// instruction count, and the log of what the sequence did.
+struct Sim {
+    clock_us: Cell<u64>,
+    instructions: Cell<u64>,
+    cycle_start: Cell<u64>,
+    sleep_us: Cell<u64>,
+    exit_code: Cell<Option<i32>>,
+    lines: RefCell<Vec<String>>,
+}
+
+impl Sim {
+    fn since_sleep(&self) -> u64 {
+        self.instructions.get() - self.cycle_start.get()
+    }
+
+    fn log(&self, kind: &str, detail: String) {
+        self.lines.borrow_mut().push(format!(
+            "{{\"kind\":\"{kind}\",\"host_seconds\":{:.6},\"instructions_since_sleep\":{}{detail}}}",
+            self.clock_us.get() as f64 / 1e6,
+            self.since_sleep()
+        ));
+    }
+}
+
+fn arg_i32(v: Option<&Value>) -> i32 {
+    match v {
+        Some(Value::I32(x)) => *x,
+        other => panic!("host call expected an i32 argument, got {other:?}"),
+    }
+}
+
+/// Stand-ins for the WasmSequencer host calls a sequence imports from `fprime_v1`.
+fn fprime_host_module(sim: &Rc<Sim>) -> HostModule {
+    let time = {
+        let sim = Rc::clone(sim);
+        HostFunction::new("time", "ii".into(), "".into(), move |state, args| {
+            let (ptr, size) = (arg_i32(args.first()) as u32, arg_i32(args.get(1)) as u32);
+            if size != 11 {
+                return ControlFlow::Break(HostFunctionBreak::Trap);
+            }
+            // Fw::Time in its default layout: base TB_SC_TIME (3), context 0, seconds,
+            // microseconds, big-endian.
+            let us = sim.clock_us.get();
+            let mut bytes = [0u8; 11];
+            bytes[1] = 3;
+            bytes[3..7].copy_from_slice(&((us / 1_000_000) as u32).to_be_bytes());
+            bytes[7..11].copy_from_slice(&((us % 1_000_000) as u32).to_be_bytes());
+            match state.memory.store(ptr as usize, &bytes) {
+                Ok(()) => ControlFlow::Continue(None),
+                Err(_) => ControlFlow::Break(HostFunctionBreak::Trap),
+            }
+        })
+    };
+    let event = {
+        let sim = Rc::clone(sim);
+        HostFunction::new("event", "iii".into(), "".into(), move |state, args| {
+            let severity = arg_i32(args.first());
+            let (ptr, size) = (arg_i32(args.get(1)) as u32, arg_i32(args.get(2)) as u32);
+            let Ok(raw) = state.memory.load(ptr as usize, size as usize) else {
+                return ControlFlow::Break(HostFunctionBreak::Trap);
+            };
+            let text: String = String::from_utf8_lossy(raw)
+                .chars()
+                .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
+                .collect();
+            sim.log("event", format!(",\"severity\":{severity},\"text\":\"{text}\""));
+            ControlFlow::Continue(None)
+        })
+    };
+    let cmd = {
+        let sim = Rc::clone(sim);
+        HostFunction::new("cmd", "ii".into(), "i".into(), move |state, args| {
+            let (ptr, size) = (arg_i32(args.first()) as u32, arg_i32(args.get(1)) as u32);
+            let Ok(raw) = state.memory.load(ptr as usize, size as usize) else {
+                return ControlFlow::Break(HostFunctionBreak::Trap);
+            };
+            let hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+            sim.log("command", format!(",\"bytes\":\"{hex}\""));
+            ControlFlow::Continue(Some(Value::I32(0)))
+        })
+    };
+    let rsleep = {
+        let sim = Rc::clone(sim);
+        HostFunction::new("rsleep", "I".into(), "".into(), move |_, args| {
+            let us = match args.first() {
+                Some(Value::I64(x)) => *x as u64,
+                other => panic!("rsleep expected an i64 argument, got {other:?}"),
+            };
+            sim.sleep_us.set(us);
+            ControlFlow::Break(HostFunctionBreak::Pause)
+        })
+    };
+    let exit = {
+        let sim = Rc::clone(sim);
+        HostFunction::new("exit", "i".into(), "".into(), move |_, args| {
+            sim.exit_code.set(Some(arg_i32(args.first())));
+            ControlFlow::Break(HostFunctionBreak::Trap)
+        })
+    };
+    HostModule {
+        name: "fprime_v1".into(),
+        globals: spacewasm::vec![],
+        functions: spacewasm::vec![time, event, cmd, rsleep, exit],
+        memory: spacewasm::Vec::zero(),
+        table: spacewasm::Vec::zero(),
+    }
+}
+
+/// Runs a sequence module's `main` to its exit over the simulated clock.
+fn run_sequence(args: &[String]) -> Res<()> {
+    let module = std::fs::read(arg(args, "--module")?)?;
+    let start: u64 = arg(args, "--start-seconds")?.parse()?;
+    let sim = Rc::new(Sim {
+        clock_us: Cell::new(start * 1_000_000),
+        instructions: Cell::new(0),
+        cycle_start: Cell::new(0),
+        sleep_us: Cell::new(0),
+        exit_code: Cell::new(None),
+        lines: RefCell::new(Vec::new()),
+    });
+    let (mut host, ir_words, heap) = Host::load(&module, spacewasm::vec![fprime_host_module(&sim)])?;
+    println!(
+        "{{\"kind\":\"load\",\"module_bytes\":{},\"ir_bytes\":{},\"heap_bytes\":{heap},\"guest_memory_bytes\":{}}}",
+        module.len(),
+        ir_words * 2,
+        host.memory_bytes()
+    );
+    let main = host.export("main")?;
+    host.engine.invoke(main, &[]).map_err(|err| format!("could not invoke main: {err:?}"))?;
+    let mut sleeps = 0u64;
+    loop {
+        match Interpreter.run(host.code.pages(), &mut host.engine, 1) {
+            InterpreterResult::OutOfFuel => sim.instructions.set(sim.instructions.get() + 1),
+            InterpreterResult::Pause => {
+                let us = sim.sleep_us.get();
+                sim.log("sleep", format!(",\"sleep_seconds\":{:.6}", us as f64 / 1e6));
+                sim.clock_us.set(sim.clock_us.get() + us);
+                sim.cycle_start.set(sim.instructions.get());
+                sleeps += 1;
+                host.engine.resume(None).map_err(|err| format!("could not resume: {err:?}"))?;
+            }
+            InterpreterResult::Finished => break,
+            other => {
+                if sim.exit_code.get().is_some() {
+                    break;
+                }
+                return Err(format!("the sequence did not finish: {other:?}").into());
+            }
+        }
+    }
+    for line in sim.lines.borrow().iter() {
+        println!("{line}");
+    }
+    println!(
+        "{{\"kind\":\"exit\",\"code\":{},\"host_seconds\":{:.6},\"sleeps\":{sleeps},\"instructions_total\":{},\"instructions_since_sleep\":{}}}",
+        sim.exit_code.get().map_or("null".to_string(), |c| c.to_string()),
+        sim.clock_us.get() as f64 / 1e6,
+        sim.instructions.get(),
+        sim.since_sleep()
+    );
+    Ok(())
+}
+
 fn main() -> Res<()> {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--sequence") {
+        return run_sequence(&args);
+    }
     let module = std::fs::read(arg(&args, "--module")?)?;
     let blob = std::fs::read(arg(&args, "--blob")?)?;
     let base: u32 = arg(&args, "--base")?.parse()?;
     let queries = std::fs::read_to_string(arg(&args, "--queries")?)?;
 
-    let (mut host, ir_words, heap) = Host::load(&module)?;
+    let (mut host, ir_words, heap) = Host::load(&module, spacewasm::vec![])?;
     let out = (base + blob.len() as u32 + 7) & !7;
     if (out as usize) + 256 > host.memory_bytes() {
         return Err(format!(

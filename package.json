@@ -10,6 +10,8 @@
   "scripts": {
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:native": "bash scripts/build-native.sh",
+    "build:sequence": "bash scripts/build-sequence.sh",
+    "build:host": "cargo build --release --locked --manifest-path bench/spacewasm-host/Cargo.toml",
     "slice": "node tools/slicer.mjs test/blobs/cassini-soi.json test/blobs/cassini-soi.slb test/blobs/cassini-soi.report.json && node tools/slicer.mjs test/blobs/sun-earth-moon.json test/blobs/sun-earth-moon.slb test/blobs/sun-earth-moon.report.json",
     "test": "node --test test/*.test.mjs",
     "cost": "node scripts/measure-cost.mjs",

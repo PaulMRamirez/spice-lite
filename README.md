@@ -26,6 +26,10 @@ The module is about 15 KB of strict WebAssembly 1.0 with no imports (14,695 byte
 
 Under the SpaceWasm interpreter a geometric state costs about 1,700 to 2,000 instructions per segment on the path (two to five sequencer slices in practice), a state with light time and stellar aberration 6,500 to 9,600, and a clock conversion about 100. Full CSPICE takes 31,660 and 81,606 for the same two state queries. Verifying the blob's checksum at start-up is the costly step, at about 21 instructions per byte with the default table (276 slices for the 13 KB blob); a build option trades table space for speed, and `docs/cost-measurements.md` has the tables.
 
+## A sequence, end to end
+
+`examples/sequence/sun_watch.c` is a demonstration sequence: it waits at a ground site until the Sun is above 10 degrees, then commands an image. Built with the library and a 13 KB blob it is one 26,796-byte module that imports only the F Prime WasmSequencer's host calls and fits in one page. Run in the SpaceWasm interpreter over a simulated clock, it waits through the night and images at the first check where full CSPICE agrees the Sun has cleared the threshold, at about 7,100 instructions (8 sequencer slices) per decision. `docs/sequence-demo.md` has the run.
+
 ## Layout
 
 `include/spice_lite.h` and `src/spice_lite.c` are the whole flight library. `tools/slicer.mjs` is the reference slicer and `tools/make-vectors.mjs` regenerates the exactness vectors. `test/` holds the WebAssembly harness, the native driver, two test blobs with their configurations and reports (a large one with a spacecraft trajectory and a small flight-shaped one), and the test tiers. `scripts/` holds the two build scripts, the strict Wasm 1.0 checker, and the cost measurement, whose SpaceWasm host harness is in `bench/spacewasm-host`.
