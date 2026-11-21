@@ -234,7 +234,7 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 
 | Quantity | Target | Measured |
 | --- | --- | --- |
-| Module size | under 24 KiB | 13,620 bytes |
+| Module size | under 24 KiB | 13,620 bytes (14,882 with the CI runner's clang 18 build) |
 | Host imports | none | none |
 | Declared memory | one 64 KiB page | one page |
 | SpaceWasm compiled IR | under 64 KiB | 11,454 words (22,908 bytes) in 45 code pages |
@@ -243,7 +243,7 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 | State query, light time and stellar aberration | under 15,000 instructions | not yet measured |
 | Time conversion | under 500 instructions | not yet measured |
 
-The SpaceWasm figures come from `spacewasm validate` (spacewasm_tools 0.8.0-rc.3) with its default flight settings, under which the module loads. Instruction counts need a host harness that drives the exports and are the next measurement to take.
+The SpaceWasm figures come from `spacewasm validate` (spacewasm_tools 0.8.0-rc.3) with its default flight settings, under which the module loads. They were taken on the 13,620-byte build; the size differs between clang 18 builds while the answers do not. Instruction counts need a host harness that drives the exports and are the next measurement to take.
 
 Blob sizes, measured from the test blob (30 days in mid 2004, source DE440):
 

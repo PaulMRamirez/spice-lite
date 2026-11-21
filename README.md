@@ -22,7 +22,7 @@ The 0.1 library provides time conversion from the host clock, states of bodies i
 
 ## Properties, as measured
 
-The module is 13,620 bytes of strict WebAssembly 1.0 with no imports, declares one page of memory, and loads under SpaceWasm's default flight settings (22,908 bytes of compiled IR). It uses no heap and no libc. The same blob and query give bit-identical results in the WebAssembly build and a native x86-64 build. Against full CSPICE, natural-body positions in the test blob agree to under a millimeter, and every answer in the accuracy tests falls within the error bounds the blob declares. 200,000 corrupted blobs run under AddressSanitizer and UndefinedBehaviorSanitizer without a fault.
+The module is under 15 KiB of strict WebAssembly 1.0 with no imports (13,620 bytes with the author's clang 18 and 14,882 on the CI runner's; the two builds give identical answers), declares one page of memory, and loads under SpaceWasm's default flight settings (22,908 bytes of compiled IR for the smaller build). It uses no heap and no libc. The same blob and query give bit-identical results in the WebAssembly build and a native x86-64 build. Against full CSPICE, natural-body positions in the test blob agree to under a millimeter, and every answer in the accuracy tests falls within the error bounds the blob declares. 200,000 corrupted blobs run under AddressSanitizer and UndefinedBehaviorSanitizer without a fault.
 
 Instruction counts per call under SpaceWasm have not been measured yet.
 
