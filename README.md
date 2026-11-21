@@ -1,3 +1,45 @@
 # spice-lite
 
-A small, import-free C library that answers spacecraft geometry questions onboard from a compact ephemeris blob. The first version is under review in a pull request.
+A small, import-free C library that answers spacecraft geometry questions onboard from one compact, read-only blob. It is built for sequences that run inside a WebAssembly interpreter such as NASA JPL's SpaceWasm under the F Prime WasmSequencer, where full SPICE cannot fit: full CSPICE needs 96.5 MiB of memory as a guest, and this library needs one 64 KiB page.
+
+This is an independent, personal open-source project at draft 0.1. It is not a product of, and is not endorsed by, NAIF, NASA, JPL, or Caltech, and it has not flown. Treat it as a design under test, not as flight software.
+
+## What it does
+
+A ground tool (the slicer) reads full SPICE kernels, cuts a mission window, and writes a blob of fixed-width tables with measured error bounds. Onboard, a sequence links this library, points it at the blob, and asks questions:
+
+```c
+#include "spice_lite.h"
+
+if (lite_init(blob, blob_len, 0) != LITE_OK) fail();
+fprime_wasm_get_time(buf, 11);
+if (lite_fwtime2et(buf, 11, &et) != LITE_OK) fail();
+if (lite_site_view(SITE_A, SUN, et, LITE_NONE, &az, &el, &range) != LITE_OK) fail();
+if (el > MIN_SUN_ELEVATION) take_image();
+```
+
+The 0.1 library provides time conversion from the host clock, states of bodies in J2000 (geometric, light-time corrected, and with stellar aberration), body orientation, azimuth and elevation from surface sites, and the spacecraft's own state from either a predicted trajectory in the blob or a state the sequence supplies from onboard navigation. `SPEC.md` is the format and behavior specification, including what is declared but not yet implemented.
+
+## Properties, as measured
+
+The module is 13,620 bytes of strict WebAssembly 1.0 with no imports, declares one page of memory, and loads under SpaceWasm's default flight settings (22,908 bytes of compiled IR). It uses no heap and no libc. The same blob and query give bit-identical results in the WebAssembly build and a native x86-64 build. Against full CSPICE, natural-body positions in the test blob agree to under a millimeter, and every answer in the accuracy tests falls within the error bounds the blob declares. 200,000 corrupted blobs run under AddressSanitizer and UndefinedBehaviorSanitizer without a fault.
+
+Instruction counts per call under SpaceWasm have not been measured yet.
+
+## Layout
+
+`include/spice_lite.h` and `src/spice_lite.c` are the whole flight library. `tools/slicer.mjs` is the reference slicer and `tools/make-vectors.mjs` regenerates the exactness vectors. `test/` holds the WebAssembly harness, the native driver, the test blob with its configuration and report, and the three test tiers. `scripts/` holds the two build scripts and the strict Wasm 1.0 checker.
+
+## Building and testing
+
+`bash scripts/build-wasm.sh` needs clang and wasm-ld with the WebAssembly backend. `bash scripts/build-native.sh` needs a C compiler with the sanitizer runtimes (set `NATIVE_CC`). `pnpm install` then `pnpm verify` builds both and runs the tests under Node 22.
+
+The accuracy tier and the slicer need four public kernels (`naif0012.tls`, `pck00011.tpc`, a DE440 subset, and a Cassini trajectory), which are not committed here. They are the test fixtures of the cspice-wasm repository; point `SPICE_LITE_KERNELS` at that directory. Without it the accuracy tests are skipped and say so. `pnpm slice` rebuilds the test blob, and CI checks that the committed blob and vectors are reproducible.
+
+## Using it in a sequence
+
+Compile `src/spice_lite.c` with your sequence, with floating-point contraction off (`-ffp-contract=off`) so results stay bit-identical across hosts. Place the blob in the module's data section, 8-byte aligned, and call `lite_init` once. One blob is active at a time. Raise the sequencer's guest memory to hold the blob; the F Prime default of 8,192 bytes is too small.
+
+## License
+
+Apache-2.0; see `LICENSE` and `NOTICE`.

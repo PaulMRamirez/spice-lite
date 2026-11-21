@@ -1,0 +1,29 @@
+spice-lite
+Copyright 2026 Paul M Ramirez
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This project is independent. It is not a product of, and is not endorsed by, NAIF,
+NASA, JPL, or Caltech. It does not contain the SPICE Toolkit. The name is a working
+name; see the open questions in SPEC.md.
+
+Third-party material
+
+src/spice_lite.c uses the polynomial coefficients of the sine, cosine, and
+arctangent kernels of fdlibm:
+
+  Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+  Developed at SunPro, a Sun Microsystems, Inc. business.
+  Permission to use, copy, modify, and distribute this software is freely
+  granted, provided that this notice is preserved.
+
+The test blob under test/blobs and the vectors under test/vectors are derived from
+public NAIF and PDS kernels (leapseconds, planetary constants, a subset of the DE440
+planetary ephemeris, and a Cassini reconstructed trajectory) through the SPICE
+Toolkit as compiled by the cspice-wasm project. The kernels themselves are not in
+this repository. SPICE is produced by the Navigation and Ancillary Information
+Facility (NAIF) at the Jet Propulsion Laboratory; to obtain the Toolkit and kernels
+go to https://naif.jpl.nasa.gov/naif/toolkit.html.
+
+The ground tools depend on cspice-wasm (https://github.com/PaulMRamirez/cspice-wasm)
+at development time only; the flight library depends on nothing.
