@@ -792,6 +792,72 @@ test('occultation requests that cannot be served get status codes', async () => 
   }
 });
 
+test('lite_occulted_shapes reports how each body was modeled, and changes no answer', async () => {
+  const [w0] = ecl.report.windowEt;
+  const tFar = w0 + 5.2 * 86400, tSolar = w0 + 1.125 * 86400, tLunar = w0 + 15.13 * 86400;
+  const SPHERE = 0, ELLIPSOID = 1, STANDIN_SPHERE = 2, BOUND = 3;
+  const api = await load(ecl.blob);
+  // The Sun and the Moon have three equal radii in this blob; the Earth and the
+  // triaxial stand-in do not, and both have an orientation.
+  // (from the Earth's center the Moon misses the Sun that day: the eclipse was partial and polar)
+  assert.deepEqual(api.occultedShapes(10, 301, 399, tSolar), { status: 0, code: 0, target: SPHERE, by: SPHERE }, 'two round bodies');
+  assert.deepEqual(api.occultedShapes(399, 301, 10, tSolar), { status: 0, code: 1, target: ELLIPSOID, by: SPHERE }, 'the Earth behind the Moon, from the Sun');
+  assert.deepEqual(api.occultedShapes(10, 399, 301, tLunar), { status: 0, code: 3, target: SPHERE, by: ELLIPSOID }, 'the Sun behind the Earth, from the Moon');
+  assert.deepEqual(api.occultedShapes(10, 399, 301, tFar), { status: 0, code: 0, target: SPHERE, by: BOUND }, 'far apart: the Earth was only ever its bounding sphere');
+  assert.deepEqual(api.occultedShapes(STANDIN, 399, 301, tFar), { status: 0, code: 0, target: BOUND, by: BOUND });
+  // Flatten the Sun, which the blob cannot orient: the sphere of its mean
+  // radius stands in for it wherever its shape is consulted, and the call says so.
+  const flat = await load(withRadii(ecl.blob, 10, [695700, 695700, 626130]), { skipCrc: true });
+  assert.deepEqual(flat.occultedShapes(10, 399, 301, tLunar), { status: 0, code: 3, target: STANDIN_SPHERE, by: ELLIPSOID }, 'the flattened Sun behind the Earth');
+  assert.deepEqual(flat.occultedShapes(10, 301, 399, tSolar), { status: 0, code: 0, target: BOUND, by: SPHERE }, 'apart by the bounding spheres, so the missing orientation was never needed');
+  assert.deepEqual(flat.occultedShapes(399, 10, 301, tLunar), { status: 0, code: 0, target: ELLIPSOID, by: STANDIN_SPHERE }, 'the Sun is the farther body: none, with both shapes consulted');
+  assert.deepEqual(flat.occultedShapes(10, 399, 301, tFar), { status: 0, code: 0, target: BOUND, by: BOUND }, 'far apart, the answer does not depend on the missing orientation');
+  // The same status and code as lite_occulted, for every pair and observer at many times.
+  const ids = [10, 301, 399, STANDIN, 3];
+  const rnd = prng(20261121);
+  let n = 0, standins = 0;
+  for (const lib of [api, flat]) {
+    for (let k = 0; k < 4000; k++) {
+      const [a, b, o] = [0, 1, 2].map(() => ids[Math.floor(rnd() * ids.length)]);
+      const et = w0 + rnd() * 16 * 86400;
+      const plain = lib.occulted(a, b, o, et), shaped = lib.occultedShapes(a, b, o, et);
+      assert.equal(shaped.status, plain.status);
+      if (plain.status === 0) {
+        assert.equal(shaped.code, plain.code);
+        assert.ok(shaped.target >= 0 && shaped.target <= 3 && shaped.by >= 0 && shaped.by <= 3);
+        if (shaped.target === STANDIN_SPHERE || shaped.by === STANDIN_SPHERE) standins++;
+        n++;
+      } else {
+        assert.deepEqual([shaped.target, shaped.by], [-1, -1], 'no shape is written when the call fails');
+      }
+    }
+  }
+  assert.ok(n > 1000, `${n} answered`);
+  // Null shape pointers are allowed, one at a time or both.
+  const x = api.exports, out = (x.__heap_base.value + 7 & ~7) + ecl.blob.length + 64;
+  assert.equal(x.lite_occulted_shapes(10, 399, 301, tLunar, out, 0, 0), 0);
+  assert.equal(x.lite_occulted_shapes(10, 399, 301, tLunar, out, out + 4, 0), 0);
+  assert.equal(x.lite_occulted_shapes(10, 399, 301, tLunar, out, 0, out + 4), 0);
+  assert.equal(x.lite_occulted_shapes(10, 399, 301, tLunar, 0, out + 4, out + 8), 6, 'null code');
+  console.log(`  ${n} answers equal to lite_occulted's; ${standins} of them used a stand-in sphere`);
+});
+
+test('lite_occulted_shapes: the native build gives the same lines as the WebAssembly build', { skip: !existsSync(resolve(root, 'build/driver')) && 'build/driver not built' }, async () => {
+  const [w0] = ecl.report.windowEt;
+  const toHex = (d) => new BigUint64Array(new Float64Array([d]).buffer)[0].toString(16).padStart(16, '0');
+  const rnd = prng(77);
+  const ids = [10, 301, 399, STANDIN, 3];
+  const lines = [];
+  for (let k = 0; k < 600; k++) {
+    const [a, b, o] = [0, 1, 2].map(() => ids[Math.floor(rnd() * ids.length)]);
+    lines.push(`occshapes ${a} ${b} ${o} ${toHex(w0 + rnd() * 16 * 86400)}`);
+  }
+  const queries = lines.join('\n') + '\n';
+  const wasm = runAll(await load(ecl.blob), queries);
+  assert.equal(execFileSync(resolve(root, 'build/driver'), ['run', ecl.path], { input: queries, encoding: 'utf8' }), wasm);
+  assert.ok(/^0 i\d i[0-3] i[0-3]$/m.test(wasm), 'some lines carry shapes');
+});
+
 // ---- exactness and robustness -----------------------------------------------
 
 for (const name of ['eclipses', 'saturn-soi']) {

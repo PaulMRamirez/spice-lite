@@ -2134,12 +2134,16 @@ static int occ_ellipsoids(const double *b, const double *rt, const double *rott,
     return LITE_OK;
 }
 
-LITE_SMALL int lite_occulted(int32_t target, int32_t by, int32_t observer, double et, int32_t *code)
+LITE_SMALL int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer, double et,
+                                    int32_t *code, int32_t *target_shape, int32_t *by_shape)
 {
     double rt[3], rf[3], b[3], f[3], rott[9], rotf[9];
     const double *pt = 0, *pf = 0;
     link_memo memo;
     int ti, fi, oi, st;
+    /* how each body is modeled: a round one is a sphere exactly; one that is
+     * not round is a stand-in sphere until its orientation is found */
+    int32_t ts = LITE_SHAPE_SPHERE, fs = LITE_SHAPE_SPHERE;
     if (!G.ready) {
         return LITE_BAD_BLOB;
     }
@@ -2181,15 +2185,25 @@ LITE_SMALL int lite_occulted(int32_t target, int32_t by, int32_t observer, doubl
         rfx = rfx > rf[2] ? rfx : rf[2];
         qb = dot3(b, b) - rtx * rtx;
         qf = dot3(f, f) - rfx * rfx;
-        if (qb > 0.0 && qf > 0.0 && dot3(f, b) <= lite_sqrt(qb) * lite_sqrt(qf) - rtx * rfx) {
+        int far = qb > 0.0 && qf > 0.0 && dot3(f, b) <= lite_sqrt(qb) * lite_sqrt(qf) - rtx * rfx;
+        if (!(rt[0] == rt[1] && rt[1] == rt[2])) {
+            ts = far ? LITE_SHAPE_BOUND : LITE_SHAPE_STANDIN;
+            if (!far && lite_orient(target, et, rott) == LITE_OK) {
+                pt = rott;
+                ts = LITE_SHAPE_ELLIPSOID;
+            }
+        }
+        if (!(rf[0] == rf[1] && rf[1] == rf[2])) {
+            fs = far ? LITE_SHAPE_BOUND : LITE_SHAPE_STANDIN;
+            if (!far && lite_orient(by, et, rotf) == LITE_OK) {
+                pf = rotf;
+                fs = LITE_SHAPE_ELLIPSOID;
+            }
+        }
+        if (far) {
             *code = LITE_OCC_NONE;
-            return LITE_OK;
-        }
-        if (!(rt[0] == rt[1] && rt[1] == rt[2]) && lite_orient(target, et, rott) == LITE_OK) {
-            pt = rott;
-        }
-        if (!(rf[0] == rf[1] && rf[1] == rf[2]) && lite_orient(by, et, rotf) == LITE_OK) {
-            pf = rotf;
+            st = LITE_OK;
+            goto done;
         }
     }
     /* A body that is round, or that has no orientation at et, is a sphere of
@@ -2201,7 +2215,23 @@ LITE_SMALL int lite_occulted(int32_t target, int32_t by, int32_t observer, doubl
         rf[0] = rf[1] = rf[2] = (rf[0] + rf[1] + rf[2]) / 3.0;
     }
     if (pt == 0 && pf == 0) {
-        return occ_spheres(b, rt[0], f, rf[0], code);
+        st = occ_spheres(b, rt[0], f, rf[0], code);
+    } else {
+        st = occ_ellipsoids(b, rt, pt, f, rf, pf, code);
     }
-    return occ_ellipsoids(b, rt, pt, f, rf, pf, code);
+done:
+    if (st == LITE_OK) {
+        if (target_shape != 0) {
+            *target_shape = ts;
+        }
+        if (by_shape != 0) {
+            *by_shape = fs;
+        }
+    }
+    return st;
+}
+
+int lite_occulted(int32_t target, int32_t by, int32_t observer, double et, int32_t *code)
+{
+    return lite_occulted_shapes(target, by, observer, et, code, 0, 0);
 }

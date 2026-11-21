@@ -154,6 +154,11 @@ static int run(const char *path)
             st = lite_occulted(atoi(tok[1]), atoi(tok[2]), atoi(tok[3]), from_hex(tok[4]), &code);
             printf("%d", st);
             if (st == LITE_OK) printf(" i%d", code);
+        } else if (!strcmp(tok[0], "occshapes") && n == 5) {
+            int32_t code = 0, ts = -1, fs = -1;
+            st = lite_occulted_shapes(atoi(tok[1]), atoi(tok[2]), atoi(tok[3]), from_hex(tok[4]), &code, &ts, &fs);
+            printf("%d", st);
+            if (st == LITE_OK) printf(" i%d i%d i%d", code, ts, fs);
         } else {
             printf("?");
         }
