@@ -7,6 +7,7 @@
 //   node tools/real-kernels.mjs --fetch         download the kernels (curl) and check their hashes
 //   node tools/real-kernels.mjs [--update-doc]  measure
 //   node tools/real-kernels.mjs --clocks [--update-doc]  measure the clocks only (seconds, not minutes)
+//   node tools/real-kernels.mjs --burn [--update-doc]    measure only the day that holds a maneuver, with and without breaks
 //
 // The kernels are public NAIF products and are never committed here. They live
 // in the directory named by SPICE_LITE_REAL_KERNELS (default: kernels/real under
@@ -59,7 +60,8 @@ const clockTables = {};
 
 // ---- orbiters -----------------------------------------------------------------
 
-for (const o of process.argv.includes('--clocks') ? [] : config.orbiters) {
+const only = ['--clocks', '--burn'].find((f) => process.argv.includes(f));
+for (const o of only ? [] : config.orbiters) {
   const spice = await engine(o.kernels);
   const t0 = await spice.str2et(o.start);
   const state = async (t) => {
@@ -125,10 +127,40 @@ for (const o of process.argv.includes('--clocks') ? [] : config.orbiters) {
   console.log(tables[`tradeoff-real-${o.key}`] + '\n');
 }
 
+// ---- a maneuver, with and without breaks ---------------------------------------
+
+// The day named by "burn", cut as one stretch and as the stretches between
+// "burnBreaks", the way the slicer cuts a body that has "breaks".
+for (const o of only && only !== '--burn' ? [] : config.orbiters.filter((q) => q.burnBreaks)) {
+  const spice = await engine(o.kernels);
+  const t0 = await spice.str2et(o.burn);
+  const edges = [t0];
+  for (const utc of o.burnBreaks) edges.push(await spice.str2et(utc));
+  edges.push(t0 + DAY);
+  const rows = [];
+  for (const want of [1800, 3600, 3 * 3600, 6 * 3600]) {
+    const whole = await sliceOrbit(spice, { id: o.body, interval: want }, [t0, t0 + DAY], o.center);
+    let worst = 0, records = 0;
+    for (let i = 0; i + 1 < edges.length; i++) {
+      const [a, z] = [edges[i], edges[i + 1]];
+      const n = Math.max(1, Math.round((z - a) / want));
+      let interval = (z - a) / n;
+      while (a + n * interval < z) interval += interval * Number.EPSILON;
+      const seg = await sliceOrbit(spice, { id: o.body, interval }, [a, a + n * interval], o.center);
+      worst = Math.max(worst, seg.maxPosErr);
+      records += seg.recordCount;
+    }
+    rows.push(`| ${want >= 3600 ? `${want / 3600} h` : `${want / 60} min`} | ${whole.recordCount} | ${dist(whole.maxPosErr)} | ${records} | ${dist(worst)} |`);
+  }
+  tables['burn-real'] = [`**${o.label}, the day from ${o.burn.slice(0, 10)}**, which holds two burns of about 110 seconds each (${o.burnBreaks.map((b) => b.slice(11)).join(', ')} UTC are their starts and ends).`, '',
+    '| Record length asked for | Records, unbroken | Worst position error, unbroken | Records, with breaks | Worst position error, with breaks |', '| --- | --- | --- | --- | --- |', ...rows].join('\n');
+  console.log(tables['burn-real'] + '\n');
+}
+
 // ---- clocks -------------------------------------------------------------------
 
 const rows = [];
-for (const c of config.clocks) {
+for (const c of only && only !== '--clocks' ? [] : config.clocks) {
   const spice = await engine(c.kernels);
   const t0 = await spice.str2et(c.start);
   const clock = await readSclk(spice, c.sclk);
@@ -145,11 +177,11 @@ for (const c of config.clocks) {
   }
   console.log(`${c.label}: 1/${clock.ticksPerCount} s ticks, ${clock.partitions.length} partitions, ${clock.recordStarts.length} coefficient records, on ${clock.timeSystem === 2 ? 'TT' : 'TDB'}`);
 }
-clockTables['clocks-real'] = ['| Clock | Window | Tolerance asked | Kernel records that begin inside | Pieces | TIME bytes | Worst error against CSPICE | Pieces with `mergeRecords` | Worst error with it |', '| --- | --- | --- | --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
-console.log(clockTables['clocks-real']);
+if (rows.length) clockTables['clocks-real'] = ['| Clock | Window | Tolerance asked | Kernel records that begin inside | Pieces | TIME bytes | Worst error against CSPICE | Pieces with `mergeRecords` | Worst error with it |', '| --- | --- | --- | --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
+if (rows.length) console.log(clockTables['clocks-real']);
 
 if (process.argv.includes('--update-doc')) {
   if (Object.keys(tables).length) updateDoc(tables);
-  updateDoc(clockTables, 'docs/real-kernels.md');
+  if (Object.keys(clockTables).length) updateDoc(clockTables, 'docs/real-kernels.md');
 }
 process.exit(0);

@@ -191,6 +191,59 @@ test('kind 4 states match CSPICE on the synthetic kernels within the declared bo
   console.log(`  ${tally.n} states across the tree; worst position error is ${(100 * tally.pos).toFixed(1)}% of its bound`);
 });
 
+test('breaks: a body cut into one segment per stretch, with no record across a break and no gap at one', { skip }, async () => {
+  const { slice } = await import('../tools/slicer.mjs');
+  const { createSpiceEngine } = await import('cspice-wasm');
+  // The low Earth orbiter with two breaks, one of them at no round time: three
+  // segments, whose record lengths are the nearest to a day that divide each stretch.
+  const breaks = ['2004-06-28T07:13:21.5', '2004-07-01T00:00:00'];
+  const cfg = structuredClone(config);
+  cfg.name = 'orbiter-breaks';
+  cfg.bodies.find((b) => b.id === -9001).breaks = breaks;
+  const cut = await slice(cfg, kernelDir, resolve(root, 'test/blobs'));
+  const segs = cut.report.ephem.filter((s) => s.target === -9001);
+  assert.deepEqual(segs.map((s) => s.recordCount), [1, 3, 2]);
+  const spice = await createSpiceEngine();
+  for (const k of config.kernels) await spice.furnsh(k, new Uint8Array(readFileSync(resolve(kernelDir, k))));
+  await furnishSynthetic(spice, config.synthetic.find((q) => q.body === -9001), report.windowEt);
+  const edges = [w0, await spice.str2et(breaks[0]), await spice.str2et(breaks[1]), w1];
+  segs.forEach((s, i) => {
+    assert.equal(s.tStart, edges[i], 'each segment starts at a break');
+    const end = s.tStart + s.recordCount * s.interval;
+    assert.ok(end >= edges[i + 1] && end - edges[i + 1] < 1e-6, 'and ends at the next, never short of it');
+  });
+  assert.deepEqual(cut.report.coverageEt, [w0, w1], 'the blob covers the whole window');
+  // The other bodies' segments are untouched by one body's breaks.
+  const rest = (r) => r.ephem.filter((s) => s.target !== -9001).map((s) => [s.target, s.recordCount, s.interval, s.maxPosErr]);
+  assert.deepEqual(rest(cut.report), rest(report));
+  const api = await load(cut.blob);
+  assert.equal(api.initStatus, 0);
+  // Every instant is answered, the breaks themselves and the nearest times to
+  // either side included, each within the bound of the segment that answers.
+  const bound = Math.max(...segs.map((s) => s.maxPosErr)), vbound = Math.max(...segs.map((s) => s.maxVelErr));
+  const times = [];
+  for (const e of edges.slice(1, 3)) for (const d of [-1, -1e-3, -6e-8, 0, 6e-8, 1e-3, 1]) times.push(e + d);
+  const rnd = prng(88);
+  for (let i = 0; i < 300; i++) times.push(w0 + rnd() * (w1 - w0));
+  let worst = 0;
+  for (const t of times) {
+    const got = api.state(-9001, 399, t, 0);
+    assert.equal(got.status, 0, `no answer ${t - edges[1]} s from the first break`);
+    const want = await spice.spkezr('-9001', t, 'J2000', 'NONE', '399');
+    const dp = Math.hypot(got.state[0] - want.position.x, got.state[1] - want.position.y, got.state[2] - want.position.z);
+    const dv = Math.hypot(got.state[3] - want.velocity.x, got.state[4] - want.velocity.y, got.state[5] - want.velocity.z);
+    assert.ok(dp <= SLACK * bound && dv <= SLACK * vbound, `off by ${dp} km and ${dv} km/s at ${t}`);
+    worst = Math.max(worst, dp / bound);
+  }
+  console.log(`  ${segs.length} segments of ${segs.map((s) => s.recordCount).join(', ')} records; ${times.length} states, worst ${(100 * worst).toFixed(1)}% of the position bound`);
+  // Breaks outside the window, or repeated, are refused.
+  for (const bad of [['2004-06-20T00:00:00'], [breaks[0], breaks[0]], [config.window.start]]) {
+    const c = structuredClone(config);
+    c.bodies.find((b) => b.id === -9001).breaks = bad;
+    await assert.rejects(slice(c, kernelDir, resolve(root, 'test/blobs')), /every break must be a distinct time inside/);
+  }
+});
+
 test('200,000 corrupted orbiter blobs under the sanitizers: no faults', { skip: !existsSync(san) && 'build/driver-san not built' }, () => {
   const out = execFileSync(san, ['fuzz', blobPath, '200000', '20261121'], { encoding: 'utf8' });
   assert.match(out, /no faults/);
