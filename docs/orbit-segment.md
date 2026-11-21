@@ -111,7 +111,7 @@ Convergence is established by scan, not by proof. `test/kepler-scan.c` includes 
 
 Three steps are the most up to the limit, and the third first appears at an eccentricity of 0.305. The margin above the limit is thin in eccentricity: on the second scan a fourth step first appears at 0.908 and a fifth at 0.986. The cap is six steps, after which the query returns the unsupported status; the scans never reach it. The worst error is rounding: near periapsis at high eccentricity the equation itself magnifies a rounding error in its inputs by up to ten. The test suite runs a coarser scan (181 eccentricities, 8,000 mean anomalies each) on every run, and sweeps the WebAssembly build over 91 eccentricities from 0 to 0.9 to confirm that every query is answered and agrees with the ground mirror.
 
-The wider record and the new solve grew the module by 411 bytes, from 18,825 to 19,236 with the author's clang 18, and the compiled SpaceWasm IR from 30,434 to 31,162 bytes. The other calls did not get dearer (a one-segment Chebyshev state went from 2,002 to 1,996 instructions). `SPEC.md` and `docs/cost-measurements.md` carry the figures for the combined library.
+The wider record and the new solve grew the module by 411 bytes with the author's clang 18, and the compiled SpaceWasm IR by 728 bytes. The other calls did not get dearer (a one-segment Chebyshev state went from 2,002 to 1,996 instructions). `SPEC.md` and `docs/cost-measurements.md` carry the figures for the combined library.
 
 ## What the tests hold
 

@@ -12,7 +12,7 @@ The counts are deterministic for a given compiler build. CI reruns the measureme
 
 ## Every call, on the large test blob
 
-The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 19,059 bytes; compiled IR 30,842 bytes.
+The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 24,071 bytes; compiled IR 39,750 bytes.
 
 <!-- full-table:start -->
 | Call | Instructions | Slices of 1,000 |
@@ -21,14 +21,14 @@ The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped m
 | lite_init, checksum skipped | 2,996 | 3 |
 | lite_host2et | 137 | 1 |
 | lite_fwtime2et | 188 | 1 |
-| lite_state, one segment (Moon from Earth-Moon barycenter), geometric | 2,002 | 3 |
-| lite_state, two segments (Moon from Earth), geometric | 3,537 | 4 |
-| lite_state, three segments (Sun from Earth), geometric | 4,655 | 5 |
-| lite_state, Sun from Earth, light time | 6,502 | 7 |
-| lite_state, Sun from Earth, light time and stellar aberration | 6,603 | 7 |
-| lite_state, Moon from Earth, light time and stellar aberration | 9,731 | 10 |
-| lite_state, spacecraft from Saturn barycenter (predicted), geometric | 1,723 | 2 |
-| lite_state, Earth from spacecraft, light time and stellar aberration | 9,053 | 10 |
+| lite_state, one segment (Moon from Earth-Moon barycenter), geometric | 1,996 | 2 |
+| lite_state, two segments (Moon from Earth), geometric | 3,525 | 4 |
+| lite_state, three segments (Sun from Earth), geometric | 4,637 | 5 |
+| lite_state, Sun from Earth, light time | 6,478 | 7 |
+| lite_state, Sun from Earth, light time and stellar aberration | 6,579 | 7 |
+| lite_state, Moon from Earth, light time and stellar aberration | 9,695 | 10 |
+| lite_state, spacecraft from Saturn barycenter (predicted), geometric | 1,718 | 2 |
+| lite_state, Earth from spacecraft, light time and stellar aberration | 9,018 | 10 |
 | lite_orient, Moon | 1,170 | 2 |
 | lite_site_view, Sun from a lunar site | 6,195 | 7 |
 | lite_set_state | 258 | 1 |
@@ -48,8 +48,8 @@ The shipped module declares a single 64 KiB page. The `sun-earth-moon` blob (Sun
 | lite_init, checksum verified (13 KB blob) | 275,057 | 276 |
 | lite_init, checksum skipped | 2,295 | 3 |
 | lite_host2et | 110 | 1 |
-| lite_state, Moon from Earth, geometric | 3,399 | 4 |
-| lite_state, Sun from Earth, light time and stellar aberration | 6,417 | 7 |
+| lite_state, Moon from Earth, geometric | 3,387 | 4 |
+| lite_state, Sun from Earth, light time and stellar aberration | 6,393 | 7 |
 | lite_orient, Moon | 1,170 | 2 |
 | lite_site_view, Sun from a lunar site | 6,037 | 7 |
 <!-- flight-table:end -->
@@ -61,9 +61,9 @@ Verifying the CRC-32 is the costly part of `lite_init`, and its cost trades agai
 <!-- crc-table:start -->
 | LITE_CRC_TABLES | Table size | Module size | Instructions per blob byte | lite_init on the 13 KB blob | Slices |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 64 bytes | 22,351 bytes | 34.0 | 449,233 | 450 |
-| 1 (default) | 1,024 bytes | 23,426 bytes | 20.8 | 275,068 | 276 |
-| 4 | 4,096 bytes | 26,443 bytes | 13.8 | 183,060 | 184 |
+| 0 | 64 bytes | 22,996 bytes | 34.0 | 449,222 | 450 |
+| 1 (default) | 1,024 bytes | 24,071 bytes | 20.8 | 275,057 | 276 |
+| 4 | 4,096 bytes | 27,088 bytes | 13.8 | 183,049 | 184 |
 <!-- crc-table:end -->
 
 The default is the middle row. A larger table buys less than it would on real hardware, because under an interpreter the cost is dominated by the number of operations, not by memory traffic.
@@ -72,31 +72,31 @@ One experiment that is not in the library: replacing the CRC with running sums o
 
 ## Sub-points and occultation
 
-`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module, and held to ceilings of 8,000 and 18,000 instructions: the script fails if a row exceeds its ceiling. The ceilings are the largest measured rows (6,643 and 15,110) with about a fifth of headroom, enough for the CI compiler's 3% and for small changes, not for a blob with deeper trees or higher degrees than these. The sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in; modeling bodies as ellipsoids in `lite_occulted` added 4,601 bytes to the module (18,825 to 23,426) and 8,180 bytes to its compiled IR (30,434 to 38,614), and the heap `spacewasm validate` reports for the load went from 32,550 bytes in 4 pages to 41,086 in 6 of 16.
+`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module, and held to ceilings of 8,000 and 18,000 instructions: the script fails if a row exceeds its ceiling. The ceilings are the largest measured rows (6,625 and 15,096) with about a fifth of headroom, enough for the CI compiler's 3% and for small changes, not for a blob with deeper trees or higher degrees than these. The sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in; modeling bodies as ellipsoids in `lite_occulted` added 4,601 bytes to the module and 8,180 bytes to its compiled IR on its own branch (the combined library is 24,071 and 39,750), and the heap `spacewasm validate` reports for the load went from 32,550 bytes in 4 pages to 41,086 in 6 of 16.
 
 <!-- geometry-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_sub_point, Moon (a sphere) from Earth | 5,265 | 6 |
-| lite_sub_point, Earth (a spheroid) from the Moon | 5,432 | 6 |
-| lite_sub_point, triaxial stand-in from Earth, three segments | 6,643 | 7 |
-| lite_sub_point, Earth from a supplied spacecraft state 900 km up | 2,990 | 3 |
-| lite_occulted, triaxial stand-in by Earth from a supplied state (two ellipsoids, none) | 5,923 | 6 |
-| lite_sub_point, triaxial stand-in from a supplied spacecraft state 10 km up | 2,819 | 3 |
-| lite_occulted, Sun by the Moon from a supplied spacecraft state (two spheres, none) | 7,437 | 8 |
-| lite_occulted, Earth by the triaxial stand-in from a supplied state (two ellipsoids) | 5,911 | 6 |
-| lite_occulted, Earth by the Moon from the Sun (partial) | 9,690 | 10 |
-| lite_occulted, Sun by Earth from the Moon (full) | 9,714 | 10 |
-| lite_occulted, Earth by the Sun from the Moon (the Sun is behind) | 8,603 | 9 |
-| lite_occulted, Sun by Earth from the Moon, far apart in the sky (none) | 7,198 | 8 |
-| lite_occulted, Sun by Earth from 2 m above its surface, Sun below the horizon (full) | 8,462 | 9 |
-| lite_occulted, Sun by Earth from 2 m above its surface, lower limb on the horizon (partial, by search) | 10,436 | 11 |
-| lite_occulted, Sun by Earth from 2 m above its surface, Sun just clear of the horizon (none, by the full search) | 14,828 | 15 |
-| lite_sub_point, Saturn (a spheroid) from Cassini (predicted) | 4,811 | 5 |
-| lite_occulted, Sun by Saturn from Cassini (full) | 8,596 | 9 |
-| lite_occulted, Earth by Saturn from Cassini (two ellipsoids, full) | 11,342 | 12 |
-| lite_occulted, Sun by Saturn from Cassini, six hours earlier (none) | 6,160 | 7 |
-| lite_occulted, a Moon with unequal radii by Earth from 2 m above its surface, just clear of the horizon (two ellipsoids, none, by the full search) | 15,110 | 16 |
+| lite_sub_point, Moon (a sphere) from Earth | 5,253 | 6 |
+| lite_sub_point, Earth (a spheroid) from the Moon | 5,420 | 6 |
+| lite_sub_point, triaxial stand-in from Earth, three segments | 6,625 | 7 |
+| lite_sub_point, Earth from a supplied spacecraft state 900 km up | 2,988 | 3 |
+| lite_occulted, triaxial stand-in by Earth from a supplied state (two ellipsoids, none) | 5,903 | 6 |
+| lite_sub_point, triaxial stand-in from a supplied spacecraft state 10 km up | 2,817 | 3 |
+| lite_occulted, Sun by the Moon from a supplied spacecraft state (two spheres, none) | 7,411 | 8 |
+| lite_occulted, Earth by the triaxial stand-in from a supplied state (two ellipsoids) | 5,891 | 6 |
+| lite_occulted, Earth by the Moon from the Sun (partial) | 9,666 | 10 |
+| lite_occulted, Sun by Earth from the Moon (full) | 9,690 | 10 |
+| lite_occulted, Earth by the Sun from the Moon (the Sun is behind) | 8,579 | 9 |
+| lite_occulted, Sun by Earth from the Moon, far apart in the sky (none) | 7,174 | 8 |
+| lite_occulted, Sun by Earth from 2 m above its surface, Sun below the horizon (full) | 8,442 | 9 |
+| lite_occulted, Sun by Earth from 2 m above its surface, lower limb on the horizon (partial, by search) | 10,416 | 11 |
+| lite_occulted, Sun by Earth from 2 m above its surface, Sun just clear of the horizon (none, by the full search) | 14,808 | 15 |
+| lite_sub_point, Saturn (a spheroid) from Cassini (predicted) | 4,800 | 5 |
+| lite_occulted, Sun by Saturn from Cassini (full) | 8,573 | 9 |
+| lite_occulted, Earth by Saturn from Cassini (two ellipsoids, full) | 11,313 | 12 |
+| lite_occulted, Sun by Saturn from Cassini, six hours earlier (none) | 6,137 | 7 |
+| lite_occulted, a Moon with unequal radii by Earth from 2 m above its surface, just clear of the horizon (two ellipsoids, none, by the full search) | 15,096 | 16 |
 <!-- geometry-table:end -->
 
 A sub-point is a geometric state, an orientation, and the nearest-point solution: from a supplied state, where the state costs almost nothing, the whole call is about 2,900 instructions, of which the orientation is 1,170 and the Newton iteration with its two arctangents the rest. The shape matters little: the triaxial case costs no more than the spheroid.

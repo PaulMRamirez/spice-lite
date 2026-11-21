@@ -325,21 +325,21 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 
 | Quantity | Target | Measured |
 | --- | --- | --- |
-| Module size | under 24 KiB | 19,059 bytes with the default checksum table (17,984 with the smallest, 22,076 with the largest) |
+| Module size | under 24 KiB | 24,071 bytes with the default checksum table (22,996 with the smallest; 27,088 with the largest, which is over the target) |
 | Host imports | none | none |
 | Declared memory | one 64 KiB page | one page; with a 13 KB Sun, Earth, Moon blob, 45,944 bytes of it stay free |
-| SpaceWasm compiled IR | under 64 KiB | 30,842 bytes |
-| SpaceWasm heap for the load | fits flight defaults | 32,550 bytes in 4 of 16 pages of 8,192 bytes |
+| SpaceWasm compiled IR | under 64 KiB | 39,750 bytes |
+| SpaceWasm heap for the load | fits flight defaults | 42,110 bytes in 6 of 16 pages of 8,192 bytes |
 | Time conversion | under 500 instructions | 110 with one TIME piece, 137 with two (188 from serialized F Prime time), at most 304 with 206 pieces and 422 with 4,096; held in CI to 4,096 pieces (see TIME) |
-| Geometric state, one segment | under 2,500 instructions | 1,711 to 1,982 |
-| Geometric state, up to three segments | under 6,000 instructions | 3,495 (two), 4,601 (three) |
+| Geometric state, one segment | under 2,500 instructions | 1,718 to 1,996 for a Chebyshev segment; 2,061 to 2,459 for a kind 4 orbit segment |
+| Geometric state, up to three segments | under 6,000 instructions | 3,525 (two), 4,637 (three) |
 | State with light time and stellar aberration | under 15,000 instructions | 6,531 to 9,627 |
 | Orientation | none set | 1,170 |
-| Site view | none set | 6,161 |
-| Sub-point | under 8,000 instructions | 2,819 to 2,990 from a supplied state; 4,811 to 6,643 over one to three segments |
-| Occultation | under 18,000 instructions | 5,911 to 7,437 when the bounding spheres or two round bodies settle it; 8,462 to 11,342 with one or two oriented ellipsoids; 10,436 to 15,110 when the search runs |
-| `lite_init`, checksum skipped | none set | 2,278 to 2,938 |
-| `lite_init`, checksum verified | none set | 20.8 instructions per blob byte with the default table: 275,040 for a 13 KB blob, 1,866,810 for the 90 KB one |
+| Site view | none set | 6,195 |
+| Sub-point | under 8,000 instructions | 2,817 to 2,988 from a supplied state; 4,800 to 6,625 over one to three segments |
+| Occultation | under 18,000 instructions | 5,891 to 7,411 when the bounding spheres or two round bodies settle it; 8,442 to 11,313 with one or two oriented ellipsoids; 10,416 to 15,096 when the search runs |
+| `lite_init`, checksum skipped | none set | 2,295 to 2,996 |
+| `lite_init`, checksum verified | none set | 20.8 instructions per blob byte with the default table: 275,057 for a 13 KB blob, 1,866,868 for the 90 KB one |
 
 The heap figure comes from `spacewasm validate` (spacewasm_tools 0.8.0-rc.3) with its default flight settings, under which the module loads. Sizes are from the author's clang 18 build; the CI runner's clang 18 build is larger by several percent while the answers are identical. The instruction counts come from `scripts/measure-cost.mjs`, which runs the module in the SpaceWasm interpreter one instruction of fuel at a time; `docs/cost-measurements.md` has the full table and the method. An instruction here is a SpaceWasm IR instruction, the unit its fuel counts, and one F Prime WasmSequencer slice is 1,000 of them by default.
 
