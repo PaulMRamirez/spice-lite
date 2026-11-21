@@ -357,9 +357,36 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
   for (const b of bodies) {
     if (b.parentIndex === -1 || b.noSegment) continue;
     const w = b.window ? [await et(b.window.start), await et(b.window.stop)] : window;
-    const seg = b.model === 'orbit' ? await sliceOrbit(spice, b, w, b.parent) : await sliceEphem(spice, b, w, b.parent);
-    ephem.push(seg);
-    coverage = [Math.max(coverage[0], seg.tStart), Math.min(coverage[1], seg.tStart + seg.recordCount * seg.interval)];
+    const cut = (spec, span) => (b.model === 'orbit' ? sliceOrbit(spice, spec, span, b.parent) : sliceEphem(spice, spec, span, b.parent));
+    if (!b.breaks?.length) {
+      const seg = await cut(b, w);
+      ephem.push(seg);
+      coverage = [Math.max(coverage[0], seg.tStart), Math.min(coverage[1], seg.tStart + seg.recordCount * seg.interval)];
+      continue;
+    }
+    // "breaks": times no record may span (the start and end of a maneuver, a
+    // seam between orbit solutions). The body gets one segment per stretch
+    // between them, each with its own grid: the record length nearest the one
+    // asked for that divides the stretch, nudged up by rounding errors only,
+    // so that neighboring segments meet with no gap a query could fall into.
+    const times = [];
+    for (const utc of b.breaks) times.push(await et(utc));
+    const inside = [...new Set(times)].filter((t) => t > w[0] && t < w[1]).sort((x, y) => x - y);
+    if (inside.length !== times.length) throw new Error(`body ${b.id}: every break must be a distinct time inside the body's window`);
+    const edges = [w[0], ...inside, w[1]];
+    let first = Infinity, last = -Infinity;
+    for (let i = 0; i + 1 < edges.length; i++) {
+      const [a, z] = [edges[i], edges[i + 1]];
+      const n = Math.max(1, Math.round((z - a) / b.interval));
+      let interval = (z - a) / n;
+      while (a + n * interval < z) interval += interval * Number.EPSILON;
+      const seg = await cut({ ...b, interval }, [a, a + n * interval]);
+      if (seg.recordCount !== n) throw new Error(`body ${b.id}: a stretch between breaks was cut into ${seg.recordCount} records, not ${n}`);
+      ephem.push(seg);
+      first = Math.min(first, seg.tStart);
+      last = Math.max(last, seg.tStart + seg.recordCount * seg.interval);
+    }
+    coverage = [Math.max(coverage[0], first), Math.min(coverage[1], last)];
   }
   ephem.sort((a, b) => a.target - b.target || a.tStart - b.tStart);
 

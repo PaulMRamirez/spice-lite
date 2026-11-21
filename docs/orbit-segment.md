@@ -153,10 +153,27 @@ Where real data is worse, which is everywhere:
 - **The Moon is not the worst case, contrary to what this file predicted.** The Moon turns once in 27 days, so over a day its lumps act almost like a fixed field and the fit degrades smoothly (24 m at an hour, 184 m at six, 2.4 km at a day). Mars turns in a day, and MRO jumps from 33 m at one hour to 1.6 km at three.
 - **Velocity is worse than position suggests at the Moon.** LRO's velocity error does not fall below 0.3 m/s at any record length. The kernel's velocity agrees with the derivative of its position to 0.1 mm/s, so this is not an artifact of the kernel's interpolation. The error varies over a minute or two, which points to gravity on the scale of a hundred kilometers (LRO crosses that in a minute, 50 km up), and no harmonic of the orbit can follow that.
 - **Eccentricity 0.47 works, in the sense that the fit converges and behaves like the others.** MAVEN (periapsis near 150 km, with drag) fits to 2 to 14 m at three hours and under, and to kilometers from six hours up, much as MRO does. The first real evidence above an eccentricity of 0.3 is that the eccentricity is not what limits the fit.
-- **A maneuver is as bad as expected.** One record across LRO's station-keeping burn of 13 January 2010 fits to 73 km.
+- **A maneuver is as bad as expected.** One record across LRO's station-keeping burn of 13 January 2010 fits to 73 km. Breaking the records at the burn repairs it; see the section on breaks below.
 - **Kind 1 also has a floor on reconstructed kernels.** No Chebyshev segment on the search grid reaches a millimeter on any of the three (the best are 11 mm, 98 mm, and 328 mm), where on the synthetic orbiters about 5 KB per day does. Part of that is the kernels' own interpolation.
 
 What this means for use. As a compact long-arc ephemeris for a real low orbiter, kind 4 as it stands delivers kilometers, not meters: enough to point at the Sun or the Earth from the spacecraft, or to predict an occultation to a few seconds, and not enough for anything that depends on the ground track or on the limb of the body being orbited (15 km along the track is over 4 seconds of MRO's motion, and moves the point beneath it by as much). Where meters matter, a Chebyshev segment (tens of kilobytes per day; see the next section) or a state supplied by onboard navigation is the tool today. The obvious repair, terms at the body's rotation, has been tried as a ground-side prototype in the section after that, and is not recommended.
+
+### A maneuver, and what breaks do for it
+
+A record that spans a burn fits to kilometers. The slicer now takes `"breaks"` on a body: times that no record may span. The body is cut into one segment per stretch between them, each with its own grid of records, and the segments meet with no gap. The times are the mission's to supply; here they were read off the kernel as the start and end of each burn. `node tools/real-kernels.mjs --burn` made this table.
+
+<!-- burn-real:start -->
+**Lunar Reconnaissance Orbiter, the day from 2010-01-13**, which holds two burns of about 110 seconds each (16:50:50, 16:52:40, 19:41:55, 19:43:45 UTC are their starts and ends).
+
+| Record length asked for | Records, unbroken | Worst position error, unbroken | Records, with breaks | Worst position error, with breaks |
+| --- | --- | --- | --- | --- |
+| 30 min | 48 | 204 m | 51 | 7.7 m |
+| 1 h | 24 | 330 m | 26 | 15 m |
+| 3 h | 8 | 569 m | 10 | 79 m |
+| 6 h | 4 | 23 km | 7 | 141 m |
+<!-- burn-real:end -->
+
+With breaks at the burns the day fits as a day without a maneuver does (compare 24 m at one hour and 184 m at six in LRO's table above): 15 m at one-hour records where unbroken records give 330 m, and 141 m at six hours where they give 23 km. The cost is two or three more records, 320 to 480 bytes, because each burn becomes a short segment of its own. What breaks do not do is find the maneuvers: the slicer cuts where it is told, and a break in the wrong place helps nothing. Seams between orbit solutions in a reconstructed kernel can be given as breaks in the same way.
 
 ### What a Chebyshev segment costs on the same orbits, within the cost ceiling
 
@@ -254,7 +271,7 @@ The wider record and the new solve grew the module by 411 bytes with the author'
 - **Terms at the body's rotation.** Tried as a prototype ("Would terms at the body's rotation rescue kind 4?" above) and not recommended: the terms that matter are many, and a record large enough to carry them is no better than shorter records of the present one. What the prototype leaves unexplained is MRO at one day, which no set of terms tried brings under 3 km.
 - **Long Chebyshev records within the ceiling.** The cost of kind 1 is now measured at every even degree to 40, and the ceiling allows degree 22 to 24. The comparison held to that degree stops at records of one orbit; records of two to four orbits at degree 22 or below have not been tried on the real orbiters.
 - **A real low Earth orbiter.** None of the three real cases is at the Earth, because NAIF does not publish one; the Earth's tesseral terms are several hundred times smaller than J2 (at Mars the ratio is about thirty), so the Earth should sit between the synthetic and Mars columns. That is a guess.
-- **Maneuvers and seams.** A record that spans a burn fits badly and says so in its error (73 km across one LRO burn); the slicer does not yet split records at maneuvers, nor at the seams of a reconstructed kernel.
+- **Finding maneuvers and seams.** The slicer splits records at the `breaks` a configuration names ("A maneuver, and what breaks do for it" above) but does not look for them. `tools/real-kernels.mjs` has the two tests used here (a step in orbit-mean semi-major axis, and a position step against a Hermite prediction); neither is part of the slicer.
 - **Higher eccentricity.** The fit has been measured at eccentricities of 0.3 (synthetic) and 0.47 (MAVEN). The evaluation is tested up to 0.9 for cost and convergence, not for accuracy.
 - **Reference plane.** Elements are referred to J2000. For an orbiter of a body whose equator is tilted from J2000 the node and inclination both drift as the orbit plane precesses about the body's pole; straight-line rates follow that over a day or two (the lunar case above does exactly this), but a per-segment pole, or quadratic terms for the plane, would hold longer.
 - **Conditioning of the fit.** On a near-circular orbit the first harmonics are nearly interchangeable with small changes to the eccentricity vector, the inclination, and the node. The damped least-squares fit copes, and the declared error is measured after the fact either way, but records shorter than an orbit fit worse than they should.
