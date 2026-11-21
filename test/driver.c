@@ -171,6 +171,20 @@ static void battery(double t0, double t1)
             (void)lite_orient(ids[i], t, r);
             (void)lite_site_view(i, ids[i], t, 0, &az, &el, &rg);
         }
+        /* the synthetic orbiters of the kind 4 test blob, at times spread
+         * over more of their records */
+        for (i = 0; i < 3; i++) {
+            static const int32_t orb[] = {-9001, -9002, -9003};
+            for (j = 0; j < 4; j++) {
+                double tj = t0 + (t1 - t0) * ((double)(4 * j + k) + 0.37) / 16.0;
+                (void)lite_state(orb[i], ids[5 - (j & 1)], tj, 0, s, &lt, &src);
+                (void)lite_state(3, orb[i], tj, j % 3, s, &lt, &src);
+            }
+            (void)lite_state(orb[i], orb[(i + 1) % 3], t, 0, s, &lt, &src);
+            (void)lite_set_state(orb[i], 399, t, s, 30.0);
+            (void)lite_state(orb[i], 301, t + 2.0, 0, s, &lt, &src);
+            (void)lite_clear_state();
+        }
         for (i = 0; i < 6; i++) s[i] = 1000.0 * (double)(i + 1);
         (void)lite_set_state(-82, ids[k], t, s, 30.0);
         (void)lite_state(-82, 399, t + 5.0, 0, s, &lt, &src);

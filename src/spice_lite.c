@@ -49,6 +49,12 @@
 #define TWO_PI 6.28318530717958647692
 #define TRIG_LIMIT 1.0e6
 
+/* EPHEM kind 4, the compact orbit model: record size, the largest squared
+ * eccentricity it accepts (0.9 squared), and the cap on Kepler iterations. */
+#define ORBIT_REC 104u
+#define ORBIT_E2_MAX 0.81
+#define ORBIT_KEPLER_MAX 12
+
 typedef struct {
     uint32_t off;
     uint32_t count;
@@ -89,6 +95,13 @@ static double rdf64(const uint8_t *p)
     double d;
     __builtin_memcpy(&d, p, 8);
     return d;
+}
+
+static double rdf32(const uint8_t *p)
+{
+    float f;
+    __builtin_memcpy(&f, p, 4);
+    return (double)f;
 }
 
 static int finite64(double x) { return (x - x) == 0.0; }
@@ -505,6 +518,9 @@ static uint32_t ephem_rec_size(uint32_t kind, uint32_t degree)
     if (kind == 2u) {
         return 6u * (degree + 1u) * 8u;
     }
+    if (kind == 4u) {
+        return ORBIT_REC;
+    }
     return 48u; /* kind 3 */
 }
 
@@ -645,10 +661,11 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
         if (!finite64(t0) || !finite64(dt) || !(dt > 0.0)) {
             return 0;
         }
-        if (kind < 1u || kind > 3u) {
+        if (kind < 1u || kind > 4u) {
             continue; /* unknown kind: queries that need it report unsupported */
         }
-        if (degree > MAX_DEGREE || count == 0u || (kind == 3u && count < 2u)) {
+        if (degree > MAX_DEGREE || count == 0u || (kind == 3u && count < 2u) ||
+            (kind == 4u && degree != 0u)) {
             return 0;
         }
         if (!records_ok(rd32(e + 32), count, ephem_rec_size(kind, degree), total)) {
@@ -804,6 +821,126 @@ static int grid_locate(double t, double t0, double dt, uint32_t count, uint32_t 
     return 1;
 }
 
+/* Kind 4: one record of the compact orbit model at tau seconds from the
+ * record's mid epoch. The record holds six elements (semi-major axis, the
+ * eccentricity vector in the orbit plane measured from the ascending node,
+ * inclination, node, and mean argument of latitude), their rates, and six
+ * coefficients of corrections in twice the argument of latitude: the form of
+ * the GPS broadcast ephemeris, regular at zero eccentricity. The velocity is
+ * the exact time derivative of the position formula, so the record needs no
+ * gravitational parameter. Ellipses only: an eccentricity over 0.9, a
+ * semi-major axis that is not positive, or an angle too large for the
+ * trigonometry returns LITE_UNSUPPORTED. Every divisor below is bounded away
+ * from zero by those checks, and the Kepler loop is capped. */
+static int sincos_near(double x, double *s, double *c)
+{
+    if (lite_fabs(x) <= 0.78) { /* inside the kernel's range: no reduction */
+        sincos_kernel(x, s, c);
+        return 0;
+    }
+    return lite_sincos(x, s, c);
+}
+
+static int eval_orbit(const uint8_t *p, double tau, double *s)
+{
+    double a1 = rdf32(p + 56), ex1 = rdf32(p + 60), ey1 = rdf32(p + 64);
+    double inc1 = rdf32(p + 68), node1 = rdf32(p + 72), lam2 = rdf32(p + 76);
+    double cuc = rdf32(p + 80), cus = rdf32(p + 84), crc = rdf32(p + 88);
+    double crs = rdf32(p + 92), cic = rdf32(p + 96), cis = rdf32(p + 100);
+    double lam1 = rdf64(p + 48);
+    double a = rdf64(p) + a1 * tau;
+    double ex = rdf64(p + 8) + ex1 * tau;
+    double ey = rdf64(p + 16) + ey1 * tau;
+    double inc = rdf64(p + 24) + inc1 * tau;
+    double node = rdf64(p + 32) + node1 * tau;
+    double lam = rdf64(p + 40) + (lam1 + lam2 * tau) * tau;
+    double lam_dot = lam1 + 2.0 * lam2 * tau;
+    double e2 = ex * ex + ey * ey;
+    double sl, cl, ka, kb, g = 0.0, sg = 0.0, cg = 1.0, d;
+    double sf, cf, rho, f_dot, w, beta, beta_dot, dd, dd_dot;
+    double xn, yn, xn_dot, yn_dot, r, r_dot, cu, su, u_dot, c2, s2, two_u;
+    double du, dr, di, uc_dot, rc_dot, ic_dot, sd, cd, cuc2, suc2, rc;
+    double xp, yp, xp_dot, yp_dot, si, ci, so, co, x, y;
+    int it, done = 0;
+    if (!(a > 0.0) || !finite64(a) || !(e2 <= ORBIT_E2_MAX)) {
+        return LITE_UNSUPPORTED;
+    }
+    if (lite_sincos(lam, &sl, &cl)) {
+        return LITE_UNSUPPORTED;
+    }
+    /* Kepler's equation, F - ex sin F + ey cos F = lam, solved by Newton steps
+     * for the offset G = F - lam, which satisfies G = ka cos G + kb sin G. A
+     * step under 1e-8 is the last: the iteration converges quadratically, so
+     * the error left is below rounding, and so small a step turns the sine and
+     * cosine to first order without another evaluation. */
+    ka = ex * sl - ey * cl;
+    kb = ex * cl + ey * sl;
+    for (it = 0; it < ORBIT_KEPLER_MAX && !done; it++) {
+        d = (g - (ka * cg + kb * sg)) / (1.0 + (ka * sg - kb * cg));
+        g -= d;
+        if (lite_fabs(d) <= 1.0e-8) {
+            double sg0 = sg;
+            sg = sg - cg * d;
+            cg = cg + sg0 * d;
+            done = 1;
+        } else if (sincos_near(g, &sg, &cg)) {
+            return LITE_UNSUPPORTED;
+        }
+    }
+    if (!done) {
+        return LITE_UNSUPPORTED;
+    }
+    sf = sl * cg + cl * sg;
+    cf = cl * cg - sl * sg;
+    rho = 1.0 - (ex * cf + ey * sf);
+    f_dot = (lam_dot + (ex1 * sf - ey1 * cf)) / rho;
+    /* position in the orbit plane, in units of a, x toward the node */
+    w = lite_sqrt(1.0 - e2);
+    beta = 1.0 / (1.0 + w);
+    beta_dot = ((ex * ex1 + ey * ey1) * beta * beta) / w;
+    dd = ey * cf - ex * sf;
+    dd_dot = (ey1 * cf - ex1 * sf) - (ey * sf + ex * cf) * f_dot;
+    xn = (cf - ex) - beta * ey * dd;
+    yn = (sf - ey) + beta * ex * dd;
+    xn_dot = (-sf * f_dot - ex1) - ((beta_dot * ey + beta * ey1) * dd + beta * ey * dd_dot);
+    yn_dot = (cf * f_dot - ey1) + ((beta_dot * ex + beta * ex1) * dd + beta * ex * dd_dot);
+    r = a * rho;
+    r_dot = a1 * rho - a * ((ex1 * cf + ey1 * sf) + dd * f_dot);
+    /* argument of latitude u, and the corrections in 2u */
+    cu = xn / rho;
+    su = yn / rho;
+    u_dot = (xn * yn_dot - yn * xn_dot) / (rho * rho);
+    c2 = cu * cu - su * su;
+    s2 = 2.0 * cu * su;
+    du = cuc * c2 + cus * s2;
+    dr = crc * c2 + crs * s2;
+    di = cic * c2 + cis * s2;
+    two_u = 2.0 * u_dot;
+    uc_dot = u_dot + two_u * (cus * c2 - cuc * s2);
+    rc_dot = r_dot + two_u * (crs * c2 - crc * s2);
+    ic_dot = inc1 + two_u * (cis * c2 - cic * s2);
+    if (sincos_near(du, &sd, &cd) || lite_sincos(inc + di, &si, &ci) ||
+        lite_sincos(node, &so, &co)) {
+        return LITE_UNSUPPORTED;
+    }
+    cuc2 = cu * cd - su * sd;
+    suc2 = su * cd + cu * sd;
+    rc = r + dr;
+    xp = rc * cuc2;
+    yp = rc * suc2;
+    xp_dot = rc_dot * cuc2 - yp * uc_dot;
+    yp_dot = rc_dot * suc2 + xp * uc_dot;
+    x = xp * co - yp * ci * so;
+    y = xp * so + yp * ci * co;
+    s[0] = x;
+    s[1] = y;
+    s[2] = yp * si;
+    s[3] = (xp_dot * co - yp_dot * ci * so) + yp * si * so * ic_dot - y * node1;
+    s[4] = (xp_dot * so + yp_dot * ci * co) - yp * si * co * ic_dot + x * node1;
+    s[5] = yp_dot * si + yp * ci * ic_dot;
+    return LITE_OK;
+}
+
 /* Evaluates one EPHEM entry at t. Returns a status. */
 static int eval_ephem(const uint8_t *e, double t, double *s)
 {
@@ -865,6 +1002,12 @@ static int eval_ephem(const uint8_t *e, double t, double *s)
             s[i + 3] = (g00 * p0 + g01 * p1) / dt + g10 * v0 + g11 * v1;
         }
         return LITE_OK;
+    }
+    if (kind == 4u) {
+        if (!grid_locate(t, t0, dt, count, &k, &x)) {
+            return LITE_OUT_OF_COVERAGE;
+        }
+        return eval_orbit(data + (uint64_t)k * ORBIT_REC, 0.5 * dt * x, s);
     }
     return LITE_UNSUPPORTED;
 }

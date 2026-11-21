@@ -49,8 +49,11 @@ jobs:
         run: pnpm test
       - name: Cost under SpaceWasm stays within the ceilings in SPEC.md
         run: node scripts/measure-cost.mjs
+      - name: Cost of the compact orbit segment under SpaceWasm
+        run: node scripts/measure-cost-orbit.mjs
       - name: The committed blob and vectors are reproducible
         run: |
           pnpm slice
           node tools/make-vectors.mjs
+          pnpm slice:orbiter
           git diff --exit-code -- test/blobs test/vectors

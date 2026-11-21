@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto';
 import { dirname, resolve, basename } from 'node:path';
 import { createSpiceEngine } from 'cspice-wasm';
 import { sclkTimePieces } from './sclk-time.mjs';
+import { sliceOrbit } from './orbit-model.mjs';
 
 export const SLICER_VERSION = '0.1.0';
 
@@ -202,7 +203,7 @@ function buildBlob(model) {
 
 const vec = (p) => [p.x, p.y, p.z];
 
-async function sliceEphem(spice, spec, window, parentId) {
+export async function sliceEphem(spice, spec, window, parentId) {
   const [t0, t1] = window;
   const dt = spec.interval;
   const n = spec.degree;
@@ -317,6 +318,9 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
   }
   const et = async (utc) => spice.str2et(utc);
   const window = [await et(config.window.start), await et(config.window.stop)];
+  // Synthetic test trajectories (tools/synth-orbiter.mjs): integrated here, written
+  // to an SPK in the engine, and from then on read through CSPICE like any kernel.
+  for (const s of config.synthetic ?? []) kernels.push(await (await import('./synth-orbiter.mjs')).furnishSynthetic(spice, s, window));
 
   const bodies = [...config.bodies].sort((a, b) => a.id - b.id);
   const indexOf = new Map(bodies.map((b, i) => [b.id, i]));
@@ -335,7 +339,7 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
   for (const b of bodies) {
     if (b.parentIndex === -1 || b.noSegment) continue;
     const w = b.window ? [await et(b.window.start), await et(b.window.stop)] : window;
-    const seg = await sliceEphem(spice, b, w, b.parent);
+    const seg = b.model === 'orbit' ? await sliceOrbit(spice, b, w, b.parent) : await sliceEphem(spice, b, w, b.parent);
     ephem.push(seg);
     coverage = [Math.max(coverage[0], seg.tStart), Math.min(coverage[1], seg.tStart + seg.recordCount * seg.interval)];
   }

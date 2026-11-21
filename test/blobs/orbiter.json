@@ -1,0 +1,24 @@
+{
+  "name": "orbiter",
+  "comment": "Test blob for the compact orbit segment (EPHEM kind 4). The three orbiters are SYNTHETIC: tools/synth-orbiter.mjs integrates each under a point mass plus J2 only and hands it to CSPICE as an SPK type 13 segment. They are realistic shapes, not real missions. Earth and Moon come from DE440.",
+  "kernels": ["naif0012.tls", "pck00011.tpc", "de440s-inner-cassini.bsp"],
+  "synthetic": [
+    { "name": "synthetic-leo.bsp", "body": -9001, "center": 399, "gm": 398600.4418, "j2": 1.08262668e-3, "radius": 6378.137,
+      "elements": { "a": 6878.137, "e": 0.0012, "incDeg": 51.6, "nodeDeg": 40, "argpDeg": 70, "meanAnomDeg": 10 } },
+    { "name": "synthetic-llo.bsp", "body": -9002, "center": 301, "gm": 4902.800066, "j2": 2.0323e-4, "radius": 1737.4,
+      "poleRaDeg": 269.9949, "poleDecDeg": 66.5392,
+      "elements": { "a": 1837.4, "e": 0.004, "incDeg": 86, "nodeDeg": 200, "argpDeg": 250, "meanAnomDeg": 30 } },
+    { "name": "synthetic-heo.bsp", "body": -9003, "center": 399, "gm": 398600.4418, "j2": 1.08262668e-3, "radius": 6378.137,
+      "elements": { "a": 24400, "e": 0.3, "incDeg": 28, "nodeDeg": 40, "argpDeg": 170, "meanAnomDeg": 10 } }
+  ],
+  "window": { "start": "2004-06-27T00:00:00", "stop": "2004-07-03T00:00:00" },
+  "created": "2004-06-26T00:00:00",
+  "bodies": [
+    { "id": 3, "parent": null },
+    { "id": 301, "parent": 3, "interval": 345600, "degree": 12, "radiiFrom": "MOON" },
+    { "id": 399, "parent": 3, "interval": 345600, "degree": 12, "radiiFrom": "EARTH" },
+    { "id": -9001, "parent": 399, "model": "orbit", "interval": 86400, "spacecraft": true, "predicted": true },
+    { "id": -9002, "parent": 301, "model": "orbit", "interval": 86400, "predicted": true },
+    { "id": -9003, "parent": 399, "model": "orbit", "interval": 21600, "predicted": true }
+  ]
+}

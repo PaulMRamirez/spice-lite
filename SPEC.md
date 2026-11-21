@@ -144,9 +144,9 @@ A segment gives one body relative to its parent on a uniform time grid. Uniform 
 | --- | --- | --- | --- |
 | 0 | 4 | `target` | NAIF code of the body |
 | 4 | 4 | `center` | NAIF code of its parent |
-| 8 | 1 | `kind` | 1, 2, or 3; see below |
+| 8 | 1 | `kind` | 1, 2, 3, or 4; see below |
 | 9 | 1 | `source` | 0: published ephemeris. 1: predicted trajectory |
-| 10 | 1 | `degree` | Polynomial degree n, at most 40 |
+| 10 | 1 | `degree` | Polynomial degree n, at most 40; zero for kind 4 |
 | 11 | 1 | reserved | Zero |
 | 12 | 4 | `record_count` | Number of records |
 | 16 | 8 | `t_start` | Start of the first record |
@@ -161,10 +161,49 @@ A segment gives one body relative to its parent on a uniform time grid. Uniform 
 | 1 | 3(n+1) floats: Chebyshev coefficients for X, then Y, then Z | `record_count * interval` | Position by Clenshaw recurrence; velocity by differentiating the same series |
 | 2 | 6(n+1) floats: position coefficients, then velocity coefficients | `record_count * interval` | Both by Clenshaw recurrence |
 | 3 | 6 floats: a state at the grid point | `(record_count - 1) * interval` | Cubic Hermite between adjacent grid points |
+| 4 | 104 bytes: orbital elements, their rates, and six harmonic coefficients | `record_count * interval` | Compact orbit model, below |
 
 Kind 1 is SPICE SPK type 2 with the per-record midpoint and radius removed, since the uniform grid implies them. Kind 2 mirrors SPK type 3. Within a record the normalized time is `x = 2 * (t - t_k) / interval - 1`. A reader that meets a kind it does not know answers queries that need it with the unsupported status.
 
 The error fields are measured by the slicer, between the fit nodes and at both record edges, where the derivative of a Chebyshev fit is at its worst.
+
+#### Kind 4: compact orbit
+
+Kind 4 describes a bound orbit around the segment's center with elements that drift, so one record can cover many revolutions. It is the form of the GPS broadcast ephemeris (Keplerian elements, linear rates, and corrections in twice the argument of latitude), with the eccentricity carried as a vector in the orbit plane so that a circular orbit is regular. Elements are referred to J2000: the inclination is measured from the J2000 XY plane and the node from the J2000 X axis. The record carries no gravitational parameter; the velocity is the exact time derivative of the position formula.
+
+A record is 104 bytes. The first seven fields are 64-bit floats and the rest 32-bit floats, which is enough for rates and small corrections. Values are at the record's mid epoch, `t_k + interval / 2`, and `tau` is the query time minus that epoch.
+
+| Offset | Size | Field | Meaning |
+| --- | --- | --- | --- |
+| 0 | 8 | `a` | Semi-major axis, kilometers |
+| 8 | 8 | `ex` | Eccentricity times the cosine of the argument of periapsis |
+| 16 | 8 | `ey` | Eccentricity times the sine of the argument of periapsis |
+| 24 | 8 | `inc` | Inclination, radians |
+| 32 | 8 | `node` | Right ascension of the ascending node, radians |
+| 40 | 8 | `lam` | Mean argument of latitude (mean anomaly plus argument of periapsis), radians |
+| 48 | 8 | `lam_rate` | Rate of `lam`, radians per second |
+| 56 | 4 | `a_rate` | Rate of `a`, kilometers per second |
+| 60 | 4 | `ex_rate` | Rate of `ex`, per second |
+| 64 | 4 | `ey_rate` | Rate of `ey`, per second |
+| 68 | 4 | `inc_rate` | Rate of `inc`, radians per second |
+| 72 | 4 | `node_rate` | Rate of `node`, radians per second |
+| 76 | 4 | `lam_quad` | Quadratic term of `lam`, radians per second squared |
+| 80 | 4 | `cuc`, then `cus` at 84 | Cosine and sine corrections to the argument of latitude, radians |
+| 88 | 4 | `crc`, then `crs` at 92 | Cosine and sine corrections to the radius, kilometers |
+| 96 | 4 | `cic`, then `cis` at 100 | Cosine and sine corrections to the inclination, radians |
+
+Evaluation at `tau`:
+
+1. Each element is its value plus its rate times `tau`; `lam` also adds `lam_quad * tau^2`.
+2. Solve Kepler's equation in the form `F - ex sin F + ey cos F = lam` for the eccentric argument of latitude `F`, by Newton steps on the offset `F - lam` starting from zero. A step smaller than 1e-8 radians ends the iteration, and at most 12 steps are taken.
+3. With `w = sqrt(1 - ex^2 - ey^2)`, `beta = 1 / (1 + w)`, and `D = ey cos F - ex sin F`, the position in the orbit plane, in units of `a` and with the first axis toward the ascending node, is `X = cos F - ex - beta ey D` and `Y = sin F - ey + beta ex D`. The radius is `r = a (1 - ex cos F - ey sin F)`, and the argument of latitude `u` has `cos u = a X / r` and `sin u = a Y / r`.
+4. The corrections are `du = cuc cos 2u + cus sin 2u`, and likewise `dr` from `crc`, `crs` and `di` from `cic`, `cis`.
+5. In the orbit plane the corrected point is `x' = (r + dr) cos(u + du)`, `y' = (r + dr) sin(u + du)`. With `i = inc + di`, the J2000 position is `(x' cos node - y' cos i sin node, x' sin node + y' cos i cos node, y' sin i)`.
+6. The velocity is the time derivative of steps 1 to 5 with every rate included.
+
+Validity limits. The model is for ellipses only. At the query time the semi-major axis must be positive and finite and the eccentricity at most 0.9; `lam`, `node`, and `inc + di` must each be within one million radians. If any of these fails, or the Kepler iteration has not converged in 12 steps (seven is the most seen at the eccentricity limit), the query returns the unsupported status. These checks keep every divisor in the evaluation away from zero, so a record of arbitrary bits yields a status or a number, never a trap. `lite_init` checks the structure: the `degree` field of a kind 4 segment must be zero and its records must lie inside the blob, or the blob is rejected. Hyperbolic and parabolic arcs are out of scope for this kind; the slicer refuses to fit one.
+
+Accuracy is whatever the slicer measured, as for the other kinds: it fits each record by least squares to states sampled from the source, then measures the stored record (after rounding to its 32-bit fields) against the source on a denser grid that includes both record edges. Neighboring records are fitted independently, so the state can step at a record boundary by up to twice the declared error. On near-circular orbits the model holds tens of meters over a record of a day; on eccentric orbits it is much coarser. `docs/orbit-segment.md` has the measurements, all of them on synthetic orbiters so far.
 
 ### ORIENT
 
@@ -297,7 +336,7 @@ Three consequences:
 
 - **Natural bodies are cheap.** A month of Sun, Earth, and Moon geometry with orientation and two sites is a 13,160-byte blob (`test/blobs/sun-earth-moon.slb`) at sub-millimeter fit error, and it fits beside the library in the module's single page.
 - **Spacecraft trajectories are not.** Two days at ten-minute records is 76 KiB, and a month would be over 1 MiB. Predicted segments suit short windows or slow trajectories; the supplied state exists for everything else.
-- **A compact orbit model is the likely next segment kind.** Conic elements with secular rates, like SPK type 15, would cover long arcs in tens of bytes.
+- **A compact orbit model covers long arcs of a closed orbit.** Kind 4 holds a near-circular orbiter in 104 bytes per day: on synthetic trajectories (a point mass plus J2), about 30 m for a low Earth orbiter and 3 m for a low lunar orbiter, 30 to 40 times smaller than the smallest Chebyshev segment of the same accuracy. An eccentric orbit (0.3) fits only to about 1 km. A kind 4 state costs 2,048 to 2,290 instructions under SpaceWasm at those eccentricities and up to 3,207 at the model's limit of 0.9, which is over the one-segment ceiling above. The same study found that kind 1 on a closed orbit is much smaller than the Cassini row suggests when its records are long and its degree high (4 to 7 KB per day for the low Earth orbiter). `docs/orbit-segment.md` has the tables.
 
 One deployment note: the F Prime WasmSequencer default gives a guest 8,192 bytes of memory, less than any useful blob, so a mission using this library must raise that setting.
 
@@ -329,7 +368,7 @@ The slicer is not trusted to grade itself. It writes its fit errors into the blo
 1. **Name.** spice-lite is kept for now. Whether a project that is not NAIF's should carry the SPICE name has been put to NAIF; the answer may force a rename.
 2. **Stellar aberration in 0.1.** It is implemented. Whether its dependence on observer velocity accuracy makes it worth keeping for spacecraft observers is open.
 3. **Host time bases.** The slicer now derives the pieces from an SCLK kernel under one stated convention (host seconds are the clock's own count; see TIME). Still open: whether that convention matches what real F Prime deployments put in `TB_SC_TIME`; whether a clock reset should be handled by a second time base, as now, or by a partition number carried in the F Prime time context byte, which `lite_fwtime2et` ignores today; whether the TIME entries should carry their own error bound and an end, so that counts the clock never showed are refused; and whether entries should be required sorted so the library can search instead of scan when a long window needs many pieces. Only type 1 SCLK kernels are read, and the clock's structure is parsed from the kernel text because cspice-wasm does not bind `scpart` or the kernel pool readers.
-4. **Compact orbit segment.** Which model, and how its error is bounded.
+4. **Compact orbit segment.** Kind 4 exists, with its error bounded by measurement like the other kinds. Still open: validation on real orbiter kernels (everything so far is synthetic, with no gravity beyond J2, no third bodies, and no drag); whether to add harmonics that suit eccentric orbits; whether elements should be referred to the central body's equator instead of J2000; splitting records at maneuvers; and the cost of the Kepler solve near the eccentricity limit.
 5. **Checksum.** CRC-32 is the draft choice and it dominates start-up: 20.8 interpreter instructions per byte with the default 1 KiB table, against two to three thousand instructions in total with the check skipped. A Fletcher-style sum over 32-bit words measured at 5.8 instructions per byte with no table, but detects fewer error patterns and would change the format. Whether to keep CRC-32, switch, or rely on uplink integrity is open.
 6. **Real memory configuration.** The one-page target assumes a mission will grant a sequence 64 KiB.
 7. **Geodetic sites, sub-points, and occultation.** Declared, not implemented.
