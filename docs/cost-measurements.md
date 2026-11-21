@@ -138,6 +138,36 @@ Before the entries were required sorted, `lite_host2et` read every entry: 60 ins
 
 The search costs more than the scan on a table of one or two pieces, by about 30 instructions, and less from about four pieces on. The scan figures are not rerun by CI; they were taken once, at the change.
 
+## A Chebyshev state against its degree
+
+How high can the degree of an EPHEM kind 1 segment go before a one-segment state passes its ceiling of 2,500 instructions? `scripts/measure-cost-degree.mjs` cuts one blob per degree (the Moon relative to the Earth-Moon barycenter, a single record of four days; the blobs are not committed) and counts a geometric state at 16 times in the record. The count does not depend on the time within a record.
+
+<!-- degree-table:start -->
+| Degree | Bytes per record | Instructions | Slices of 1,000 | Within the 2,500 ceiling |
+| --- | --- | --- | --- | --- |
+| 4 | 120 | 965 | 1 | yes |
+| 6 | 168 | 1,106 | 2 | yes |
+| 8 | 216 | 1,247 | 2 | yes |
+| 10 | 264 | 1,388 | 2 | yes |
+| 12 | 312 | 1,529 | 2 | yes |
+| 14 | 360 | 1,670 | 2 | yes |
+| 16 | 408 | 1,811 | 2 | yes |
+| 18 | 456 | 1,952 | 2 | yes |
+| 20 | 504 | 2,093 | 3 | yes |
+| 22 | 552 | 2,234 | 3 | yes |
+| 24 | 600 | 2,375 | 3 | yes |
+| 26 | 648 | 2,516 | 3 | no |
+| 28 | 696 | 2,657 | 3 | no |
+| 30 | 744 | 2,798 | 3 | no |
+| 32 | 792 | 2,939 | 3 | no |
+| 34 | 840 | 3,080 | 4 | no |
+| 36 | 888 | 3,221 | 4 | no |
+| 38 | 936 | 3,362 | 4 | no |
+| 40 | 984 | 3,503 | 4 | no |
+<!-- degree-table:end -->
+
+The cost is a straight line: 683 instructions plus 70.5 per degree. The CI build, without `wasm-opt`, is 45 higher at every degree. These blobs hold two bodies and one segment; a larger blob adds to the fixed part, because bodies and segments are found by scanning (the same state on the Moon in the `cassini-soi` blob, with seven bodies and six segments, costs 176 more at degree 12). So the highest even degree that stays inside the ceiling is 24 in the smallest blob and 22 with that overhead added. An earlier guess in `docs/orbit-segment.md`, about 5,000 instructions at degree 34, came from two points on two different blobs and was wrong by a wide margin: degree 34 measures 3,080.
+
 ## Reading the numbers
 
 A geometric state costs about 1,700 to 2,000 instructions for each segment on the path between the two bodies, plus a few hundred of fixed overhead. Most of that is the Chebyshev recurrence: three components, position and velocity together, at degree 10 to 12. A body tree shaped so that common queries cross one or two segments keeps them within two to four slices.
@@ -154,4 +184,4 @@ For scale, full CSPICE as a SpaceWasm guest (measured in the cspice-wasm reposit
 
 ## What is not measured
 
-Wall time on flight hardware, behavior inside an actual F Prime deployment, and the cost of the calls on blobs with other shapes (higher degrees, deeper trees, Hermite segments).
+Wall time on flight hardware, behavior inside an actual F Prime deployment, and the cost of the calls on blobs with other shapes (deeper trees, Hermite segments, Chebyshev orientation segments of high degree).

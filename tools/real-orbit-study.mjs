@@ -3,8 +3,8 @@
 // holds kilometers, not meters, on a real orbit:
 //
 //   1. What a Chebyshev segment (kind 1) costs in bytes at a given accuracy when
-//      its degree is kept at 12 or below, the highest degree whose evaluation
-//      cost has been measured under SpaceWasm (inside the one-segment ceiling).
+//      its degree is kept at 22 or below, the highest degree whose evaluation
+//      stays inside the one-segment cost ceiling (scripts/measure-cost-degree.mjs).
 //   2. A prototype of what terms at the central body's rotation would add to
 //      kind 4. It changes nothing in the format or the library: the extra terms
 //      are fitted on the ground only, to see what they would buy.
@@ -26,6 +26,11 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dir = process.env.SPICE_LITE_REAL_KERNELS ?? resolve(root, 'kernels/real');
 const config = JSON.parse(readFileSync(resolve(root, 'tools/real-kernels.json'), 'utf8'));
 const DAY = 86400;
+// The highest degree of kind 1 tried: a one-segment state at degree 22 costs
+// 2,234 instructions in a blob of two bodies (scripts/measure-cost-degree.mjs)
+// and about 180 more in the largest test blob, inside the ceiling of 2,500;
+// degree 24 would not be.
+const MAX_DEGREE = 22;
 const fmt = (n) => Math.round(n).toLocaleString('en-US');
 const mins = (s) => (s >= 3600 && s % 3600 === 0 ? `${s / 3600} h` : `${Math.round(s / 60)} min`);
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -75,11 +80,11 @@ for (const o of config.orbiters) {
   for (let j = 0; j < 720; j++) a += osculating(await state(t0 + (DAY * (j + 0.5)) / 720), o.gm)[0] / 720;
   const period = 2 * Math.PI * Math.sqrt(a ** 3 / o.gm);
 
-  // ---- 1. kind 1 at degree 12 or below, over the first day of the window ----
+  // ---- 1. kind 1 within the degree cap, over the first day of the window ----
   const cheb = [];
   for (const frac of [1 / 32, 1 / 24, 1 / 16, 1 / 12, 1 / 8, 1 / 6, 1 / 4, 1 / 3, 1 / 2, 1]) {
     const interval = Math.max(60, Math.round((frac * period) / 30) * 30);
-    for (let degree = 4; degree <= 12; degree += 2) {
+    for (let degree = 4; degree <= MAX_DEGREE; degree += 2) {
       const seg = await sliceEphem(spice, { id: o.body, interval, degree, checks: 4 * (degree + 1) }, [t0, t0 + DAY], o.center);
       cheb.push({ interval, degree, err: seg.maxPosErr, perDay: (24 * (degree + 1) * DAY) / interval });
     }
@@ -146,7 +151,7 @@ for (const o of config.orbiters) {
 }
 
 const tables = {
-  'kind1-real': ['| Orbiter | Worst position error wanted | Smallest kind 1 at degree 12 or below, bytes per day | Smallest kind 4, bytes per day |', '| --- | --- | --- | --- |', ...kind1Rows].join('\n'),
+  'kind1-real': [`| Orbiter | Worst position error wanted | Smallest kind 1 at degree ${MAX_DEGREE} or below, bytes per day | Smallest kind 4, bytes per day |`, '| --- | --- | --- | --- |', ...kind1Rows].join('\n'),
   'rotation-terms': [`| Orbiter | One record of | ${SETS.map(([label, set]) => (set.length ? `${label} (${6 * set.length} more numbers)` : label)).join(' | ')} |`, `| --- | --- |${SETS.map(() => ' --- |').join('')}`, ...rotationRows].join('\n'),
 };
 console.log(tables['kind1-real'] + '\n\n' + tables['rotation-terms']);
