@@ -6,6 +6,7 @@
 //
 //   node tools/real-kernels.mjs --fetch         download the kernels (curl) and check their hashes
 //   node tools/real-kernels.mjs [--update-doc]  measure
+//   node tools/real-kernels.mjs --clocks [--update-doc]  measure the clocks only (seconds, not minutes)
 //
 // The kernels are public NAIF products and are never committed here. They live
 // in the directory named by SPICE_LITE_REAL_KERNELS (default: kernels/real under
@@ -58,7 +59,7 @@ const clockTables = {};
 
 // ---- orbiters -----------------------------------------------------------------
 
-for (const o of config.orbiters) {
+for (const o of process.argv.includes('--clocks') ? [] : config.orbiters) {
   const spice = await engine(o.kernels);
   const t0 = await spice.str2et(o.start);
   const state = async (t) => {
@@ -133,20 +134,22 @@ for (const c of config.clocks) {
   const clock = await readSclk(spice, c.sclk);
   for (const days of [1, 30]) {
     for (const tol of [1e-6, 1e-3]) {
-      const { fit } = await sclkTimePieces(spice, { base: 3, sclk: c.sclk, maxErrorSeconds: tol, maxPieces: 4096 }, [t0, t0 + days * DAY]);
+      const window = [t0, t0 + days * DAY];
+      const { fit } = await sclkTimePieces(spice, { base: 3, sclk: c.sclk, maxErrorSeconds: tol, maxPieces: 4096 }, window);
+      const merged = (await sclkTimePieces(spice, { base: 3, sclk: c.sclk, maxErrorSeconds: tol, maxPieces: 4096, mergeRecords: true }, window)).fit;
       // coefficient records of the kernel that begin inside the window
       const e0 = await spice.sce2c(c.sclk, t0), e1 = await spice.sce2c(c.sclk, t0 + days * DAY);
       const inside = clock.recordStarts.filter((r) => r > e0 && r <= e1).length;
-      rows.push(`| ${c.label} | ${days} d from ${c.start.slice(0, 10)} | ${tol === 1e-6 ? '1 microsecond' : '1 millisecond'} | ${inside} | ${fit.pieces} | ${fit.pieces * 32} | ${(fit.maxErrSeconds * 1e6).toFixed(2)} microseconds |`);
+      rows.push(`| ${c.label} | ${days} d from ${c.start.slice(0, 10)} | ${tol === 1e-6 ? '1 microsecond' : '1 millisecond'} | ${inside} | ${fit.pieces} | ${fit.pieces * 32} | ${(fit.maxErrSeconds * 1e6).toFixed(2)} microseconds | ${merged.pieces} | ${(merged.maxErrSeconds * 1e6).toFixed(2)} microseconds |`);
     }
   }
   console.log(`${c.label}: 1/${clock.ticksPerCount} s ticks, ${clock.partitions.length} partitions, ${clock.recordStarts.length} coefficient records, on ${clock.timeSystem === 2 ? 'TT' : 'TDB'}`);
 }
-clockTables['clocks-real'] = ['| Clock | Window | Tolerance asked | Kernel records that begin inside | Pieces | TIME bytes | Worst error against CSPICE |', '| --- | --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
+clockTables['clocks-real'] = ['| Clock | Window | Tolerance asked | Kernel records that begin inside | Pieces | TIME bytes | Worst error against CSPICE | Pieces with `mergeRecords` | Worst error with it |', '| --- | --- | --- | --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
 console.log(clockTables['clocks-real']);
 
 if (process.argv.includes('--update-doc')) {
-  updateDoc(tables);
+  if (Object.keys(tables).length) updateDoc(tables);
   updateDoc(clockTables, 'docs/real-kernels.md');
 }
 process.exit(0);
