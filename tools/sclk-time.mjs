@@ -144,9 +144,38 @@ async function measure(truth, p, n) {
   return { worst, at, samples: Math.min(n + 1, p.u1 - p.u0 + 1) };
 }
 
+// Joins neighboring pieces of one partition where a single line over their
+// whole span still holds the tolerance. The slicer starts a piece at every
+// coefficient record of the kernel, which a kernel with frequent small rate
+// corrections turns into many pieces whatever the tolerance; this pass undoes
+// that where it costs nothing. A run is grown one piece at a time and kept only
+// when the joined line passes the same dense check as any other piece, with the
+// samples scaled to the number of pieces joined, so a step in the clock (which
+// no line can cross within the tolerance) ends a run.
+async function mergePieces(truth, accepted, tol, fitSamples, checkSamples) {
+  const out = [];
+  let i = 0;
+  while (i < accepted.length) {
+    let run = accepted[i], j = i + 1;
+    while (j < accepted.length) {
+      const records = run.records + accepted[j].records;
+      const scale = Math.min(records, 32);
+      const piece = await fitLine(truth, run.piece.u0, accepted[j].piece.u1, fitSamples * scale);
+      if (piece.err > 0.9 * tol) break;
+      const m = await measure(truth, piece, checkSamples * scale);
+      if (m.worst > tol) break;
+      run = { piece, m, records };
+      j++;
+    }
+    out.push(run);
+    i = j;
+  }
+  return out;
+}
+
 // ---- the entry point --------------------------------------------------------
 
-// entry: { base, sclk, maxErrorSeconds, maxPieces?, partition? }
+// entry: { base, sclk, maxErrorSeconds, maxPieces?, partition?, mergeRecords? }
 // window: [et0, et1].
 // Returns the TIME pieces and a record of the fit for the report and PROV.
 export async function sclkTimePieces(spice, entry, window) {
@@ -213,13 +242,17 @@ export async function sclkTimePieces(spice, entry, window) {
     left: maxPieces,
     error: () => new Error(`${who}: more than ${maxPieces} linear pieces are needed to hold ${tol} s over the window; raise maxErrorSeconds or maxPieces, or shorten the window`),
   };
+  // With mergeRecords the first pass may need more pieces than the blob will
+  // hold in the end, so it runs without the limit and the limit is applied to
+  // what is left after merging.
+  const firstPass = entry.mergeRecords ? { left: Infinity, error: budget.error } : budget;
   const fitSamples = 128, checkSamples = 2048;
   const out = [];
   const perPartition = [];
   let worst = 0, worstAt = null, samples = 0;
   for (const s of stretches) {
     const truth = (u) => spice.sct2e(entry.sclk, s.encOf(u));
-    let count = 0;
+    let accepted = [];
     for (let k = 0; k < s.starts.length; k++) {
       const uA = s.starts[k], uB = k + 1 < s.starts.length ? s.starts[k + 1] - 1 : s.uHi;
       // Fit under a slightly tighter target so the dense check has room for
@@ -229,7 +262,7 @@ export async function sclkTimePieces(spice, entry, window) {
       let pending = [{ uA, uB, target: 0.9 * tol, n: fitSamples, depth: 0 }];
       while (pending.length) {
         const job = pending.shift();
-        const pieces = await fitStretch(truth, job.uA, job.uB, job.target, job.n, budget);
+        const pieces = await fitStretch(truth, job.uA, job.uB, job.target, job.n, firstPass);
         for (const piece of pieces) {
           const m = await measure(truth, piece, checkSamples);
           if (m.worst > tol) {
@@ -237,16 +270,20 @@ export async function sclkTimePieces(spice, entry, window) {
             pending.push({ uA: piece.u0, uB: piece.u1, target: job.target * 0.8, n: job.n * 2, depth: job.depth + 1 });
             continue;
           }
-          budget.left--;
-          count++;
-          samples += m.samples;
-          if (m.worst > worst) { worst = m.worst; worstAt = hostOf(m.at); }
-          out.push({ base: entry.base, hostStart: piece.hostStart, etStart: piece.etStart, rate: piece.rate });
+          firstPass.left--;
+          accepted.push({ piece, m, records: 1 });
         }
       }
     }
-    perPartition.push({ partition: s.p.partition, hostFirst: hostOf(s.uLo), hostLast: hostOf(s.uHi), pieces: count });
+    if (entry.mergeRecords) accepted = await mergePieces(truth, accepted, tol, fitSamples, checkSamples);
+    for (const { piece, m } of accepted) {
+      samples += m.samples;
+      if (m.worst > worst) { worst = m.worst; worstAt = hostOf(m.at); }
+      out.push({ base: entry.base, hostStart: piece.hostStart, etStart: piece.etStart, rate: piece.rate });
+    }
+    perPartition.push({ partition: s.p.partition, hostFirst: hostOf(s.uLo), hostLast: hostOf(s.uHi), pieces: accepted.length });
   }
+  if (out.length > maxPieces) throw budget.error();
   const fit = {
     base: entry.base, sclk: entry.sclk, timeSystem: clock.timeSystem === 2 ? 'TT' : clock.timeSystem === 1 ? 'TDB' : `system ${clock.timeSystem}`,
     ticksPerHostSecond: T, toleranceSeconds: tol, maxErrSeconds: worst, maxErrAtHostSecond: worstAt,

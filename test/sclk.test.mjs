@@ -183,6 +183,24 @@ test('the same clock to a millisecond needs only the structural pieces', { skip 
   console.log(line('drift, 30 days', report, await check(blob, report, 902)));
 });
 
+test('mergeRecords joins pieces across coefficient records where the tolerance allows, and only there', { skip }, async () => {
+  await setup();
+  const cut = async (tol, mergeRecords) => slice(configFor('drift-merge', JUNE, [{ base: 3, sclk: -901, maxErrorSeconds: tol, mergeRecords }]), kernelDir, blobDir);
+  // At a millisecond the drifting clock's rate changes (a tenth of a second
+  // apart after a few weeks) and its 4 ms step keep every record its own piece.
+  assert.equal((await cut(1e-3, true)).report.timeFit[0].pieces, 5);
+  // At a second, records of one partition run together; the two partitions do not.
+  const plain = await cut(1, false), merged = await cut(1, true);
+  const [a, b] = [plain.report.timeFit[0], merged.report.timeFit[0]];
+  assert.equal(a.pieces, 5);
+  assert.ok(b.pieces < a.pieces && b.pieces >= b.partitions.length, `${b.pieces} pieces after merging, ${a.pieces} before`);
+  assert.ok(b.maxErrSeconds <= 1);
+  assert.deepEqual(b.partitions.map((q) => [q.partition, q.hostFirst, q.hostLast]), a.partitions.map((q) => [q.partition, q.hostFirst, q.hostLast]), 'the same readings are covered');
+  console.log(line('drift, 30 days, merged at 1 s', merged.report, await check(merged.blob, merged.report, 903)));
+  // Without the option the pieces are exactly what they were.
+  assert.deepEqual((await cut(1e-6, false)).report.time, (await cut(1e-6, undefined)).report.time);
+});
+
 test('the cassini-demo clock is one line', { skip }, async () => {
   await setup();
   for (const tol of [1e-6, 1e-3]) {
