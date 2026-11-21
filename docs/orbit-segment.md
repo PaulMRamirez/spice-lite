@@ -80,7 +80,7 @@ How to read them (these four points are about a point mass plus J2 only; the nex
 - **Longer records cost accuracy slowly.** At two days per record (80 bytes per day) the three stand at 0.5 m, 9 m, and 8 m; at six days, 10 m, 82 m, and 20 m. What grows is the part of the slow drift that straight-line rates and the two quadratic terms do not follow. The lunar orbiter grows fastest because its elements are referred to J2000 and its plane precesses about a tilted pole.
 - **Short records are no place for kind 4.** Below about one orbit per record a Chebyshev segment is as small or smaller, and the fit of 33 numbers to a fraction of an orbit is poorly determined: the low Earth orbiter at 30-minute records fits to 455 mm, worse than at one hour, and worse than the old 19-number record did there (46 mm).
 - **Eccentricity is no longer the weak case, on this evidence.** One synthetic orbit at an eccentricity of 0.3 is all that has been tried here; MAVEN, below, is a real one at 0.47. Nothing says how the fit holds at 0.6 or 0.8, where more harmonics matter.
-- **Kind 1 was undersold.** The Cassini segment in `SPEC.md` (76 KB for two days) uses ten-minute records at degree 10 through a hyperbolic periapsis. On a closed orbit, long records at high degree are far smaller: about 4 to 7 KB per day for the low Earth orbiter at meter to millimeter accuracy, so a month is 130 to 210 KB, inside the 1 MiB limit. The price is evaluation cost, which grows with degree: the measured kind 1 costs (1,711 instructions at degree 10, 1,982 at degree 12) extrapolate to roughly 5,000 at degree 34, an estimate that has not been measured.
+- **Kind 1 was undersold.** The Cassini segment in `SPEC.md` (76 KB for two days) uses ten-minute records at degree 10 through a hyperbolic periapsis. On a closed orbit, long records at high degree are far smaller: about 4 to 7 KB per day for the low Earth orbiter at meter to millimeter accuracy, so a month is 130 to 210 KB, inside the 1 MiB limit. The price is evaluation cost, which grows with degree at 70.5 instructions each: a one-segment state passes the 2,500 ceiling at degree 26 in the smallest blob and at degree 24 in a larger one, and costs 3,080 at degree 34 (`docs/cost-measurements.md`, "A Chebyshev state against its degree"). An earlier version of this file guessed 5,000 at degree 34.
 
 ## Real orbiters
 
@@ -149,7 +149,7 @@ Where real data is worse, which is everywhere:
 
 - **By three to nearly five orders of magnitude at one record per day.** A one-day record is off by 2.4 km for LRO, 15 km for MRO, and 5.7 km for MAVEN. The synthetic figures beside them are 2.2 m, 0.3 m, and 4.3 m.
 - **The cause is the rotating gravity field, which the model has no term for.** The record's harmonics are tied to the argument of latitude, so they can follow anything that repeats with the orbit: the zonal terms of the gravity field, J2 above all. The longitude-dependent terms (the tesserals: Tharsis at Mars, the mascons at the Moon) pull on the orbit at frequencies that mix the orbit's with the body's rotation, and their largest effects have periods of a rotation and its fractions. For MRO the residual of a one-day record is almost all along the track, with 9.6 km of amplitude at half a Mars day (12.3 hours) and 3.8 km at a full one; the fit itself has converged (ten times the iterations move the error by less than a part in a thousand). Linear rates and one quadratic term cannot follow a 12-hour wave, and nothing in the record can be spent on it.
-- **Short records recover tens of meters.** At an hour or less the slow wave is nearly straight and the fit falls to 11 to 33 m for the two low orbiters. There the smallest Chebyshev segment in these tables that does as well is the same size or smaller (the last column is near 1), but it gets there with degrees of 10 to 40, and above degree 12 the cost of evaluating it has not been measured; the section after these bullets repeats the comparison with the degree held to 12, and kind 4 comes out ahead at tens of meters. A Chebyshev segment can go on to centimeters where kind 4 cannot. Kind 4 is 3.5 to 15 times smaller than kind 1 at 6 to 24 hours per record, at errors of 0.2 to 15 km.
+- **Short records recover tens of meters.** At an hour or less the slow wave is nearly straight and the fit falls to 11 to 33 m for the two low orbiters. There the smallest Chebyshev segment in these tables that does as well is the same size or smaller (the last column is near 1), but it often gets there with degrees the cost ceiling does not allow (the ceiling is passed at degree 24 to 26); the section after these bullets repeats the comparison with the degree held to 22, and kind 4 comes out ahead at tens of meters. A Chebyshev segment can go on to centimeters where kind 4 cannot. Kind 4 is 3.5 to 15 times smaller than kind 1 at 6 to 24 hours per record, at errors of 0.2 to 15 km.
 - **The Moon is not the worst case, contrary to what this file predicted.** The Moon turns once in 27 days, so over a day its lumps act almost like a fixed field and the fit degrades smoothly (24 m at an hour, 184 m at six, 2.4 km at a day). Mars turns in a day, and MRO jumps from 33 m at one hour to 1.6 km at three.
 - **Velocity is worse than position suggests at the Moon.** LRO's velocity error does not fall below 0.3 m/s at any record length. The kernel's velocity agrees with the derivative of its position to 0.1 mm/s, so this is not an artifact of the kernel's interpolation. The error varies over a minute or two, which points to gravity on the scale of a hundred kilometers (LRO crosses that in a minute, 50 km up), and no harmonic of the orbit can follow that.
 - **Eccentricity 0.47 works, in the sense that the fit converges and behaves like the others.** MAVEN (periapsis near 150 km, with drag) fits to 2 to 14 m at three hours and under, and to kilometers from six hours up, much as MRO does. The first real evidence above an eccentricity of 0.3 is that the eccentricity is not what limits the fit.
@@ -160,32 +160,32 @@ What this means for use. As a compact long-arc ephemeris for a real low orbiter,
 
 ### What a Chebyshev segment costs on the same orbits, within the cost ceiling
 
-If kind 4 cannot give meters on a real orbit, what does the alternative cost? The search in the tables above lets kind 1 go to degree 40, whose evaluation has never been measured under SpaceWasm and by extrapolation would break the one-segment ceiling well before that. This table keeps to degree 12 or below, the highest degree measured (1,705 instructions for a one-segment state), and lets the records get as short as a thirty-second of an orbit. `tools/real-orbit-study.mjs` made it, over the first day of each orbiter's window.
+If kind 4 cannot give meters on a real orbit, what does the alternative cost? The search in the tables above lets kind 1 go to degree 40, and a one-segment state passes its cost ceiling at degree 24 to 26 (`docs/cost-measurements.md`, "A Chebyshev state against its degree"). This table keeps to degree 22 or below, which stays inside the ceiling in a blob of any size tried, and lets the records run from a thirty-second of an orbit to one orbit; longer records were not tried at these degrees. `tools/real-orbit-study.mjs` made it, over the first day of each orbiter's window.
 
 <!-- kind1-real:start -->
-| Orbiter | Worst position error wanted | Smallest kind 1 at degree 12 or below, bytes per day | Smallest kind 4, bytes per day |
+| Orbiter | Worst position error wanted | Smallest kind 1 at degree 22 or below, bytes per day | Smallest kind 4, bytes per day |
 | --- | --- | --- | --- |
 | Lunar Reconnaissance Orbiter | 1 km | 2,753 (degree 8, 113 min records, 399 m) | 320 (12 h records, 545 m) |
 | Lunar Reconnaissance Orbiter | 100 m | 3,364 (degree 10, 113 min records, 80 m) | 1,280 (3 h records, 49 m) |
 | Lunar Reconnaissance Orbiter | 10 m | 7,952 (degree 12, 57 min records, 9.6 m) | not reached at any record length |
-| Lunar Reconnaissance Orbiter | 1 m | 53,760 (degree 6, 5 min records, 506 mm) | not reached at any record length |
-| Lunar Reconnaissance Orbiter | 0.1 m | 99,840 (degree 12, 5 min records, 72 mm) | not reached at any record length |
+| Lunar Reconnaissance Orbiter | 1 m | 37,029 (degree 14, 14 min records, 741 mm) | not reached at any record length |
+| Lunar Reconnaissance Orbiter | 0.1 m | 93,806 (degree 18, 7 min records, 56 mm) | not reached at any record length |
 | Mars Reconnaissance Orbiter | 1 km | 3,394 (degree 10, 112 min records, 349 m) | 3,840 (1 h records, 21 m) |
 | Mars Reconnaissance Orbiter | 100 m | 4,011 (degree 12, 112 min records, 91 m) | 3,840 (1 h records, 21 m) |
 | Mars Reconnaissance Orbiter | 10 m | 6,789 (degree 10, 56 min records, 8.1 m) | not reached at any record length |
-| Mars Reconnaissance Orbiter | 1 m | 20,549 (degree 10, 19 min records, 496 mm) | not reached at any record length |
-| Mars Reconnaissance Orbiter | 0.1 m | 40,017 (degree 10, 10 min records, 75 mm) | not reached at any record length |
-| MAVEN | 1 km | 4,910 (degree 12, 92 min records, 578 m) | 1,280 (3 h records, 14 m) |
-| MAVEN | 100 m | 8,264 (degree 10, 46 min records, 39 m) | 1,280 (3 h records, 14 m) |
-| MAVEN | 10 m | 9,767 (degree 12, 46 min records, 6.7 m) | 3,840 (1 h records, 3.9 m) |
-| MAVEN | 1 m | 16,529 (degree 10, 23 min records, 751 mm) | not reached at any record length |
-| MAVEN | 0.1 m | 36,593 (degree 8, 9 min records, 67 mm) | not reached at any record length |
+| Mars Reconnaissance Orbiter | 1 m | 17,510 (degree 18, 38 min records, 907 mm) | not reached at any record length |
+| Mars Reconnaissance Orbiter | 0.1 m | 28,022 (degree 14, 19 min records, 72 mm) | not reached at any record length |
+| MAVEN | 1 km | 2,896 (degree 22, 275 min records, 855 m) | 1,280 (3 h records, 14 m) |
+| MAVEN | 100 m | 5,278 (degree 20, 138 min records, 46 m) | 1,280 (3 h records, 14 m) |
+| MAVEN | 10 m | 7,932 (degree 20, 92 min records, 5.4 m) | 3,840 (1 h records, 3.9 m) |
+| MAVEN | 1 m | 14,275 (degree 18, 46 min records, 977 mm) | not reached at any record length |
+| MAVEN | 0.1 m | 30,494 (degree 14, 17 min records, 92 mm) | not reached at any record length |
 <!-- kind1-real:end -->
 
 How to read it:
 
-- **Meters on a real low orbit cost tens of kilobytes a day, whatever the kind.** One meter takes 17 to 54 KB per day of kind 1 at these degrees, and ten meters 7 to 10 KB. A month at ten meters is 200 to 300 KB: inside the 1 MiB limit on a blob, far outside the one 64 KiB page the flight-shaped case assumes, which has 45 KB to spare (four to six days at ten meters; two days or so at one meter, and under one for LRO).
-- **Kind 4 has a real niche after all, at tens of meters.** At records of one to three hours it holds 14 to 49 m in 1.3 to 3.8 KB per day. Kind 1 held to degree 12 needs 3.4 to 8.3 KB per day for 100 m on the same orbits: the same size for MRO, 2.6 times larger for LRO, 6.5 times larger for MAVEN. The tables further up show kind 1 matching kind 4 at those record lengths, but only by using degrees of 14 to 40, which no measurement says the cost ceiling allows.
+- **Meters on a real low orbit cost tens of kilobytes a day, whatever the kind.** One meter takes 14 to 37 KB per day of kind 1 at these degrees, and ten meters 7 to 8 KB. A month at ten meters is 200 to 240 KB: inside the 1 MiB limit on a blob, far outside the one 64 KiB page the flight-shaped case assumes, which has 45 KB to spare (five or six days at ten meters; one to three at one meter).
+- **Kind 4 has a real niche after all, at tens of meters.** At records of one to three hours it holds 14 to 49 m in 1.3 to 3.8 KB per day. Kind 1 held to degree 22 needs 3.4 to 5.3 KB per day for 100 m on the same orbits: the same size for MRO, 2.6 times larger for LRO, 4.1 times larger for MAVEN. The tables further up show kind 1 matching kind 4 at those record lengths, but with records of several orbits at degrees up to 40, most of them beyond what the cost ceiling allows.
 - **Below about ten meters there is only kind 1,** or a state supplied by onboard navigation.
 - **The figures differ a little from the tables above** (MRO at one hour is 21 m here and 33 m there) because this table covers the first day of each window, not all of it.
 
@@ -252,7 +252,7 @@ The wider record and the new solve grew the module by 411 bytes with the author'
 ## What remains
 
 - **Terms at the body's rotation.** Tried as a prototype ("Would terms at the body's rotation rescue kind 4?" above) and not recommended: the terms that matter are many, and a record large enough to carry them is no better than shorter records of the present one. What the prototype leaves unexplained is MRO at one day, which no set of terms tried brings under 3 km.
-- **Kind 1 above degree 12.** The cost of a Chebyshev record of degree 14 to 40 has not been measured; by extrapolation from degrees 10 and 12 it passes the one-segment ceiling near degree 18. If long records at high degree are wanted for real orbiters, that cost needs measuring and, perhaps, its own ceiling.
+- **Long Chebyshev records within the ceiling.** The cost of kind 1 is now measured at every even degree to 40, and the ceiling allows degree 22 to 24. The comparison held to that degree stops at records of one orbit; records of two to four orbits at degree 22 or below have not been tried on the real orbiters.
 - **A real low Earth orbiter.** None of the three real cases is at the Earth, because NAIF does not publish one; the Earth's tesseral terms are several hundred times smaller than J2 (at Mars the ratio is about thirty), so the Earth should sit between the synthetic and Mars columns. That is a guess.
 - **Maneuvers and seams.** A record that spans a burn fits badly and says so in its error (73 km across one LRO burn); the slicer does not yet split records at maneuvers, nor at the seams of a reconstructed kernel.
 - **Higher eccentricity.** The fit has been measured at eccentricities of 0.3 (synthetic) and 0.47 (MAVEN). The evaluation is tested up to 0.9 for cost and convergence, not for accuracy.

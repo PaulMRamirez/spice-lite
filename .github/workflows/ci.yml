@@ -51,6 +51,8 @@ jobs:
         run: node scripts/measure-cost.mjs
       - name: Cost of the compact orbit segment under SpaceWasm
         run: node scripts/measure-cost-orbit.mjs
+      - name: Cost of a Chebyshev state against its degree
+        run: node scripts/measure-cost-degree.mjs
       - name: The committed blob and vectors are reproducible
         run: |
           pnpm slice
