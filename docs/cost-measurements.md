@@ -8,11 +8,11 @@ What each spice-lite call costs when the library runs as a guest of NASA JPL's S
 
 The instruction is a SpaceWasm IR instruction, the unit its fuel counts, not a WebAssembly bytecode instruction. One WasmSequencer slice is 1,000 of them by default, so the last column is how many sequencer cycles a call spans.
 
-The counts are deterministic for a given compiler build. CI reruns the measurement and fails if any call exceeds its ceiling, returns an error, or if the shipped module needs more than its one page. The numbers below are from the author's clang 18 build; the CI runner's build runs 1 to 3% higher and is 7% larger (26,041 bytes). Both builds use clang 18.1.3; the difference is that clang runs binaryen's `wasm-opt` on the linked module when it finds it on the PATH, which the author's machine has and the CI runner does not. To reproduce the CI figures on a machine that has `wasm-opt`, take it off the PATH for the build.
+The counts are deterministic for a given compiler build. CI reruns the measurement and fails if any call exceeds its ceiling, returns an error, or if the shipped module needs more than its one page. The numbers below are from the author's clang 18 build; the CI runner's build runs 1 to 3% higher and is 7% larger (26,274 bytes). Both builds use clang 18.1.3; the difference is that clang runs binaryen's `wasm-opt` on the linked module when it finds it on the PATH, which the author's machine has and the CI runner does not. To reproduce the CI figures on a machine that has `wasm-opt`, take it off the PATH for the build.
 
 ## Every call, on the large test blob
 
-The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 24,328 bytes; compiled IR 40,206 bytes.
+The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 24,552 bytes; compiled IR 40,538 bytes.
 
 <!-- full-table:start -->
 | Call | Instructions | Slices of 1,000 |
@@ -61,9 +61,9 @@ Verifying the CRC-32 is the costly part of `lite_init`, and its cost trades agai
 <!-- crc-table:start -->
 | LITE_CRC_TABLES | Table size | Module size | Instructions per blob byte | lite_init on the 13 KB blob | Slices |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 64 bytes | 23,256 bytes | 34.0 | 449,230 | 450 |
-| 1 (default) | 1,024 bytes | 24,328 bytes | 20.8 | 275,063 | 276 |
-| 4 | 4,096 bytes | 27,345 bytes | 13.8 | 183,055 | 184 |
+| 0 | 64 bytes | 23,480 bytes | 34.0 | 449,230 | 450 |
+| 1 (default) | 1,024 bytes | 24,552 bytes | 20.8 | 275,063 | 276 |
+| 4 | 4,096 bytes | 27,569 bytes | 13.8 | 183,055 | 184 |
 <!-- crc-table:end -->
 
 The default is the middle row. A larger table buys less than it would on real hardware, because under an interpreter the cost is dominated by the number of operations, not by memory traffic.
@@ -72,7 +72,7 @@ One experiment that is not in the library: replacing the CRC with running sums o
 
 ## Sub-points and occultation
 
-`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module, and held to ceilings of 8,000 and 18,000 instructions: the script fails if a row exceeds its ceiling. The ceilings are the largest measured rows (6,625 and 15,096) with about a fifth of headroom, enough for the CI compiler's 3% and for small changes, not for a blob with deeper trees or higher degrees than these. The sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in; modeling bodies as ellipsoids in `lite_occulted` added 4,601 bytes to the module and 8,180 bytes to its compiled IR on its own branch (the combined library was 24,083 and 39,776 when the two were merged), and the heap `spacewasm validate` reports for the load went from 32,550 bytes in 4 pages to 41,086 in 6 of 16.
+`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module, and held to ceilings of 8,000 and 18,000 instructions: the script fails if a row exceeds its ceiling. The ceilings are the largest measured rows (6,597 and 15,121) with about a fifth of headroom, enough for the CI compiler's 3% and for small changes, not for a blob with deeper trees or higher degrees than these. The sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in; modeling bodies as ellipsoids in `lite_occulted` added 4,601 bytes to the module and 8,180 bytes to its compiled IR on its own branch (the combined library was 24,083 and 39,776 when the two were merged), and the heap `spacewasm validate` reports for the load went from 32,550 bytes in 4 pages to 41,086 in 6 of 16.
 
 <!-- geometry-table:start -->
 | Call | Instructions | Slices of 1,000 |
@@ -81,22 +81,22 @@ One experiment that is not in the library: replacing the CRC with running sums o
 | lite_sub_point, Earth (a spheroid) from the Moon | 5,392 | 6 |
 | lite_sub_point, triaxial stand-in from Earth, three segments | 6,597 | 7 |
 | lite_sub_point, Earth from a supplied spacecraft state 900 km up | 2,615 | 3 |
-| lite_occulted, triaxial stand-in by Earth from a supplied state (two ellipsoids, none) | 5,903 | 6 |
+| lite_occulted, triaxial stand-in by Earth from a supplied state (two ellipsoids, none) | 5,947 | 6 |
 | lite_sub_point, triaxial stand-in from a supplied spacecraft state 10 km up | 2,536 | 3 |
-| lite_occulted, Sun by the Moon from a supplied spacecraft state (two spheres, none) | 7,411 | 8 |
-| lite_occulted, Earth by the triaxial stand-in from a supplied state (two ellipsoids) | 5,891 | 6 |
-| lite_occulted, Earth by the Moon from the Sun (partial) | 9,666 | 10 |
-| lite_occulted, Sun by Earth from the Moon (full) | 9,690 | 10 |
-| lite_occulted, Earth by the Sun from the Moon (the Sun is behind) | 8,579 | 9 |
-| lite_occulted, Sun by Earth from the Moon, far apart in the sky (none) | 7,174 | 8 |
-| lite_occulted, Sun by Earth from 2 m above its surface, Sun below the horizon (full) | 8,442 | 9 |
-| lite_occulted, Sun by Earth from 2 m above its surface, lower limb on the horizon (partial, by search) | 10,416 | 11 |
-| lite_occulted, Sun by Earth from 2 m above its surface, Sun just clear of the horizon (none, by the full search) | 14,808 | 15 |
+| lite_occulted, Sun by the Moon from a supplied spacecraft state (two spheres, none) | 7,428 | 8 |
+| lite_occulted, Earth by the triaxial stand-in from a supplied state (two ellipsoids) | 5,935 | 6 |
+| lite_occulted, Earth by the Moon from the Sun (partial) | 9,688 | 10 |
+| lite_occulted, Sun by Earth from the Moon (full) | 9,728 | 10 |
+| lite_occulted, Earth by the Sun from the Moon (the Sun is behind) | 8,598 | 9 |
+| lite_occulted, Sun by Earth from the Moon, far apart in the sky (none) | 7,222 | 8 |
+| lite_occulted, Sun by Earth from 2 m above its surface, Sun below the horizon (full) | 8,464 | 9 |
+| lite_occulted, Sun by Earth from 2 m above its surface, lower limb on the horizon (partial, by search) | 10,437 | 11 |
+| lite_occulted, Sun by Earth from 2 m above its surface, Sun just clear of the horizon (none, by the full search) | 14,830 | 15 |
 | lite_sub_point, Saturn (a spheroid) from Cassini (predicted) | 4,772 | 5 |
-| lite_occulted, Sun by Saturn from Cassini (full) | 8,573 | 9 |
-| lite_occulted, Earth by Saturn from Cassini (two ellipsoids, full) | 11,313 | 12 |
-| lite_occulted, Sun by Saturn from Cassini, six hours earlier (none) | 6,137 | 7 |
-| lite_occulted, a Moon with unequal radii by Earth from 2 m above its surface, just clear of the horizon (two ellipsoids, none, by the full search) | 15,096 | 16 |
+| lite_occulted, Sun by Saturn from Cassini (full) | 8,611 | 9 |
+| lite_occulted, Earth by Saturn from Cassini (two ellipsoids, full) | 11,340 | 12 |
+| lite_occulted, Sun by Saturn from Cassini, six hours earlier (none) | 6,185 | 7 |
+| lite_occulted, a Moon with unequal radii by Earth from 2 m above its surface, just clear of the horizon (two ellipsoids, none, by the full search) | 15,121 | 16 |
 <!-- geometry-table:end -->
 
 A sub-point is a geometric state, an orientation, and the nearest-point solution: from a supplied state, where the state costs almost nothing, the whole call is about 2,900 instructions, of which the orientation is 1,170 and the Newton iteration with its two arctangents the rest. The shape matters little: the triaxial case costs no more than the spheroid.

@@ -134,6 +134,24 @@ LITE_API int lite_sub_point(int32_t body, int32_t observer, double et,
 LITE_API int lite_occulted(int32_t target, int32_t by, int32_t observer, double et,
                            int32_t *code);
 
+/* Shape codes for lite_occulted_shapes: how a body was modeled in one answer. */
+#define LITE_SHAPE_SPHERE 0    /* its three radii are equal: a sphere, exactly */
+#define LITE_SHAPE_ELLIPSOID 1 /* its triaxial ellipsoid, turned by its ORIENT segment at et */
+#define LITE_SHAPE_STANDIN 2   /* its radii differ but the blob has no orientation for it at
+                                  et: a sphere of the mean of its radii stood in for it */
+#define LITE_SHAPE_BOUND 3     /* its radii differ, and the answer (LITE_OCC_NONE) came from
+                                  the spheres of the largest radii being apart in the sky, so
+                                  it holds for the ellipsoid in any attitude */
+
+/* lite_occulted, and how each of the two bodies was modeled. The status and
+ * code are those of lite_occulted for the same arguments. On LITE_OK,
+ * target_shape and by_shape each receive a LITE_SHAPE_ value; either pointer
+ * may be null. LITE_SHAPE_STANDIN is the one case where the answer may differ
+ * from the ellipsoid's (see lite_occulted): a caller that needs the ellipsoid
+ * can test for it. Nothing is written to the shapes on any other status. */
+LITE_API int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer, double et,
+                                  int32_t *code, int32_t *target_shape, int32_t *by_shape);
+
 #ifdef __cplusplus
 }
 #endif

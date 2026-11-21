@@ -284,6 +284,7 @@ Each call returns a status code, writes results through pointers, and never trap
 | `lite_site_view(site, target, et, corr, &az, &el, &range)` | Azimuth, elevation, and range of a target seen from a site | geometric only |
 | `lite_sub_point(body, observer, et, &lon, &lat, &alt)` | Point on a body's ellipsoid nearest to an observer, and the observer's altitude | geometric only |
 | `lite_occulted(target, by, observer, et, &code)` | Whether one body hides another: none, partial, annular, or full | geometric only; ellipsoids where the blob orients the body, spheres otherwise |
+| `lite_occulted_shapes(target, by, observer, et, &code, &target_shape, &by_shape)` | The same answer, and how each body was modeled in reaching it | as `lite_occulted`; either shape pointer may be null |
 
 A sequence in F Prime reads the clock with the host's `time` call, which writes a serialized `Fw::Time` into guest memory, and passes those bytes to `lite_fwtime2et`. That helper assumes F Prime's default types and big-endian serialization; a deployment that changes them decodes the time itself and calls `lite_host2et`.
 
@@ -313,6 +314,8 @@ Before any orientation is read, the call checks whether the spheres of the two b
 
 The call returns unsupported when either body lacks positive radii, and bad argument when `target` and `by` are the same body or the observer is on or inside either body as modeled (ellipsoid or sphere), which includes the observer being one of the two.
 
+*Which model was used.* `lite_occulted` falls back from the ellipsoid to a sphere without saying so. `lite_occulted_shapes` is the same call with two more outputs, one per body, and gives the same status and code for the same arguments; `lite_occulted` is now that call with both outputs null, so no existing caller changes. Each output is one of four shape codes: 0 sphere (the body's three radii are equal, so the sphere is exact); 1 ellipsoid (turned by the body's ORIENT segment at the query time); 2 stand-in (the radii differ but the blob has no orientation for the body at that time, so a sphere of the mean radius was used); 3 bound (the radii differ, but the answer, none, came from the test on spheres of the largest radii, and holds for the ellipsoid in any attitude). Code 2 is the one case in which the answer may differ from the ellipsoid's, by up to the spread of that body's radii at the limb, and a caller that needs to know can test for it. The shapes are written only when the status is OK.
+
 **Status codes.** 0 OK, 1 out of coverage, 2 no path between the bodies (or an unknown body or site), 3 supplied state stale and no predicted segment, 4 bad blob or no active blob, 5 unsupported, 6 bad argument.
 
 **Determinism.** The library uses only add, subtract, multiply, divide, and square root on 64-bit floats, and carries its own sine, cosine, and arctangent. Built with floating-point contraction off, the same blob and query give bit-identical results on every host. The test suite checks this between a WebAssembly build and a native x86-64 build.
@@ -325,11 +328,11 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 
 | Quantity | Target | Measured |
 | --- | --- | --- |
-| Module size | under 32 KiB | 24,328 bytes with the default checksum table (23,256 with the smallest, 27,345 with the largest); the CI build is 26,041 |
+| Module size | under 32 KiB | 24,552 bytes with the default checksum table (23,480 with the smallest, 27,569 with the largest); the CI build is 26,274 |
 | Host imports | none | none |
 | Declared memory | one 64 KiB page | one page; with a 13 KB Sun, Earth, Moon blob, 45,944 bytes of it stay free |
-| SpaceWasm compiled IR | under 64 KiB | 40,206 bytes |
-| SpaceWasm heap for the load | fits flight defaults | 42,622 bytes in 6 of 16 pages of 8,192 bytes |
+| SpaceWasm compiled IR | under 64 KiB | 40,538 bytes |
+| SpaceWasm heap for the load | fits flight defaults | 43,266 bytes in 6 of 16 pages of 8,192 bytes |
 | Time conversion | under 500 instructions | 110 with one TIME piece, 137 with two (188 from serialized F Prime time), at most 304 with 206 pieces and 422 with 4,096, the most a blob may hold (see TIME) |
 | Geometric state, one segment | under 2,500 instructions | 1,427 to 1,705 for a Chebyshev segment; 1,770 to 2,168 for a kind 4 orbit segment (2,190 on the CI build) |
 | Geometric state, up to three segments | under 6,000 instructions | 3,497 (two), 4,609 (three) |
@@ -337,7 +340,7 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 | Orientation | none set | 1,170 |
 | Site view | none set | 6,167 |
 | Sub-point | under 8,000 instructions | 2,536 to 2,615 from a supplied state; 4,772 to 6,597 over one to three segments |
-| Occultation | under 18,000 instructions | 5,891 to 7,411 when the bounding spheres or two round bodies settle it; 8,442 to 11,313 with one or two oriented ellipsoids; 10,416 to 15,096 when the search runs |
+| Occultation | under 18,000 instructions | 5,935 to 7,428 when the bounding spheres or two round bodies settle it; 8,464 to 11,340 with one or two oriented ellipsoids; 10,437 to 15,121 when the search runs |
 | `lite_init`, checksum skipped | none set | 2,299 to 3,000 |
 | `lite_init`, checksum verified | none set | 20.8 instructions per blob byte with the default table: 275,063 for a 13 KB blob, 1,866,874 for the 90 KB one |
 
@@ -401,7 +404,7 @@ The slicer is not trusted to grade itself. It writes its fit errors into the blo
 4. **Compact orbit segment.** Kind 4 exists, with its error bounded by measurement like the other kinds. It has now been measured on real orbiter kernels (LRO, MRO, MAVEN; `docs/orbit-segment.md`), where a record of a day is off by kilometers, against meters on the synthetic orbiters, for want of terms at the central body's rotation. Still open: whether to add such terms, which would change the record; how the fit holds at eccentricities above the 0.47 of MAVEN; whether elements should be referred to the central body's equator instead of J2000; splitting records at maneuvers; and whether the Kepler solve should be made cheaper still (the worst case is now 310 instructions under the one-segment ceiling on the CI build, after the state path was shortened; it was 10).
 5. **Checksum.** CRC-32 is the draft choice and it dominates start-up: 20.8 interpreter instructions per byte with the default 1 KiB table, against two to three thousand instructions in total with the check skipped. A Fletcher-style sum over 32-bit words measured at 5.8 instructions per byte with no table, but detects fewer error patterns and would change the format. Whether to keep CRC-32, switch, or rely on uplink integrity is open.
 6. **Real memory configuration.** The one-page target assumes a mission will grant a sequence 64 KiB.
-7. **Geodetic sites, and what occultation leaves out.** Sub-points and occultation are implemented; geodetic sites are not. Occultation uses each body's ellipsoid when the blob orients it, at a cost of one orientation per body that is not round and about 1,600 instructions of algebra, and falls back to a sphere without saying so when it does not; whether the call should report the model it used is open. So is the rule for which body is in front when two bodies nearly touch, the size the ellipsoid model adds to the module (4.6 KB, the largest single addition so far, of which the search for near-surface observers is 0.6 KB and the shared evaluation of the observer's path 1.0 KB), and whether either call needs a light-time correction.
+7. **Geodetic sites, and what occultation leaves out.** Sub-points and occultation are implemented; geodetic sites are not. Occultation uses each body's ellipsoid when the blob orients it, at a cost of one orientation per body that is not round and about 1,600 instructions of algebra, and falls back to a sphere when it does not; `lite_occulted_shapes` reports which model each body got. Still open is the rule for which body is in front when two bodies nearly touch, the size the ellipsoid model adds to the module (4.6 KB, the largest single addition so far, of which the search for near-surface observers is 0.6 KB and the shared evaluation of the observer's path 1.0 KB), and whether either call needs a light-time correction.
 8. **Where the slicer lives.** It is in this repository for now; it may move to cspice-wasm.
 
 ## Notes on sources

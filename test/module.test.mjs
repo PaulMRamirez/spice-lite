@@ -19,7 +19,7 @@ test('the module fits the spec budgets', async () => {
   assert.ok(bytes.length < 32 * 1024, `module is ${bytes.length} bytes; the budget is 32 KiB`);
   const { exports } = await WebAssembly.instantiate(await WebAssembly.compile(bytes), {});
   assert.equal(exports.memory.buffer.byteLength, 65536, 'declares exactly one page');
-  for (const name of ['lite_init', 'lite_host2et', 'lite_fwtime2et', 'lite_state', 'lite_set_state', 'lite_clear_state', 'lite_state_gap', 'lite_orient', 'lite_site_view', 'lite_sub_point', 'lite_occulted']) {
+  for (const name of ['lite_init', 'lite_host2et', 'lite_fwtime2et', 'lite_state', 'lite_set_state', 'lite_clear_state', 'lite_state_gap', 'lite_orient', 'lite_site_view', 'lite_sub_point', 'lite_occulted', 'lite_occulted_shapes']) {
     assert.equal(typeof exports[name], 'function', name);
   }
 });
