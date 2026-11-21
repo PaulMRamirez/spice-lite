@@ -1,5 +1,5 @@
 {
-  "comment": "Real mission kernels used to measure the compact orbit segment and the clock mapping (tools/real-kernels.mjs). They are public NAIF products, fetched on demand and checked against the hashes below; none is committed to this repository. The windows were chosen to hold no maneuver and, where the kernel allows, no seam between orbit solutions (the tool reports both); 'spanDays' shortens a window from the default six days to fit between seams, and 'burn' names a day that does hold a maneuver.",
+  "comment": "Real mission kernels used to measure the compact orbit segment and the clock mapping (tools/real-kernels.mjs). They are public NAIF products, fetched on demand and checked against the hashes below; none is committed to this repository. The windows were chosen to hold no maneuver and, where the kernel allows, no seam between orbit solutions (the tool reports both); 'spanDays' shortens a window from the default six days to fit between seams, 'burn' names a day that does hold a maneuver, and 'rotation' is the central body's rotation rate in radians per second, used only by tools/real-orbit-study.mjs.",
   "kernels": {
     "naif0012.tls": { "url": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls", "sha256": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b" },
     "lrorg_2010001_2010091_v01.bsp": { "url": "https://naif.jpl.nasa.gov/pub/naif/pds/data/lro-l-spice-6-v1.0/lrosp_1000/data/spk/lrorg_2010001_2010091_v01.bsp", "sha256": "8ae47a5a72998d2794166df71da63d6bda2fe46a34b0a993c40cbae714e32e66" },
@@ -11,13 +11,13 @@
     "mar097s.bsp": { "url": "https://naif.jpl.nasa.gov/pub/naif/MAVEN/kernels/spk/mar097s.bsp", "sha256": "cbe84c5d6830e2fa1086b8f71d51b811a94be9345d22a5cc94167489cfe65f38" }
   },
   "orbiters": [
-    { "key": "lro", "label": "Lunar Reconnaissance Orbiter", "body": -85, "center": 301, "gm": 4902.800066,
+    { "key": "lro", "label": "Lunar Reconnaissance Orbiter", "body": -85, "center": 301, "gm": 4902.800066, "rotation": 2.6617e-6,
       "kernels": ["naif0012.tls", "lrorg_2010001_2010091_v01.bsp"],
       "start": "2010-01-15T12:00:00", "spanDays": 2, "burn": "2010-01-13T00:00:00" },
-    { "key": "mro", "label": "Mars Reconnaissance Orbiter", "body": -74, "center": 499, "gm": 42828.37,
+    { "key": "mro", "label": "Mars Reconnaissance Orbiter", "body": -74, "center": 499, "gm": 42828.37, "rotation": 7.08822e-5,
       "kernels": ["naif0012.tls", "mar097s.bsp", "mro_psp10_ssd_mro110c.bsp"],
       "start": "2009-01-10T00:00:00" },
-    { "key": "maven", "label": "MAVEN", "body": -202, "center": 499, "gm": 42828.37,
+    { "key": "maven", "label": "MAVEN", "body": -202, "center": 499, "gm": 42828.37, "rotation": 7.08822e-5,
       "kernels": ["naif0012.tls", "mar097s.bsp", "maven_orb_rec_150101_150401_v1.bsp"],
       "start": "2015-01-19T06:00:00", "spanDays": 1 }
   ],
