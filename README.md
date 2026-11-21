@@ -18,7 +18,7 @@ if (lite_site_view(SITE_A, SUN, et, LITE_NONE, &az, &el, &range) != LITE_OK) fai
 if (el > MIN_SUN_ELEVATION) take_image();
 ```
 
-The 0.1 library provides time conversion from the host clock, states of bodies in J2000 (geometric, light-time corrected, and with stellar aberration), body orientation, azimuth and elevation from surface sites, and the spacecraft's own state from either a predicted trajectory in the blob or a state the sequence supplies from onboard navigation. `SPEC.md` is the format and behavior specification, including what is declared but not yet implemented.
+The 0.1 library provides time conversion from the host clock, states of bodies in J2000 (geometric, light-time corrected, and with stellar aberration), body orientation, azimuth and elevation from surface sites, the point on a body beneath an observer with the altitude above it, whether one body hides another (bodies as spheres), and the spacecraft's own state from either a predicted trajectory in the blob or a state the sequence supplies from onboard navigation. `SPEC.md` is the format and behavior specification, including the limits of each call and what is still left out.
 
 ## Properties, as measured
 

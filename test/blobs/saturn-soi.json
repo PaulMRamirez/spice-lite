@@ -1,0 +1,19 @@
+{
+  "name": "saturn-soi",
+  "comment": "Geometry test blob: one day around Cassini's Saturn orbit insertion with Saturn itself (699, radii and orientation) and the predicted spacecraft trajectory, for the sub-point and occultation tests. Saturn hides the Sun and the Earth from the spacecraft for about half an hour on 2004-07-01.",
+  "kernels": ["naif0012.tls", "pck00011.tpc", "de440s-inner-cassini.bsp", "cassini-soi.bsp"],
+  "window": { "start": "2004-06-30T12:00:00", "stop": "2004-07-01T12:00:00" },
+  "bodies": [
+    { "id": 0, "parent": null },
+    { "id": 3, "parent": 0, "interval": 86400, "degree": 8 },
+    { "id": 6, "parent": 0, "interval": 86400, "degree": 6 },
+    { "id": 10, "parent": 0, "interval": 86400, "degree": 8, "radiiFrom": "SUN" },
+    { "id": 399, "parent": 3, "interval": 86400, "degree": 10, "radiiFrom": "EARTH" },
+    { "id": 699, "parent": 6, "interval": 86400, "degree": 8, "radiiFrom": "SATURN" },
+    { "id": -82, "parent": 6, "interval": 600, "degree": 10, "spacecraft": true, "predicted": true }
+  ],
+  "orient": [
+    { "body": 399, "frame": "IAU_EARTH", "interval": 86400, "degree": 3 },
+    { "body": 699, "frame": "IAU_SATURN", "interval": 86400, "degree": 4 }
+  ]
+}

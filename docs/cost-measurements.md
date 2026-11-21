@@ -70,6 +70,28 @@ The default is the middle row. A larger table buys less than it would on real ha
 
 One experiment that is not in the library: replacing the CRC with running sums over 32-bit words (a Fletcher-style check) costs 5.8 instructions per byte with no table at all, which is 519,445 instructions on the 90 KB blob against 1,866,810 for the default CRC. It detects fewer error patterns than a CRC and would change the blob format, so it is recorded here as data for the open question in `SPEC.md`, not adopted.
 
+## Sub-points and occultation
+
+`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module. With these two calls the module is 16,869 bytes and its compiled IR 26,984 bytes (the sizes quoted elsewhere in this document and in `SPEC.md` were measured before they were added, and are 2,174 and 3,864 bytes smaller); the instruction counts in the tables above are unchanged by their addition. No ceilings are set for them yet.
+
+<!-- geometry-table:start -->
+| Call | Instructions | Slices of 1,000 |
+| --- | --- | --- |
+| lite_sub_point, Moon (a sphere) from Earth | 5,227 | 6 |
+| lite_sub_point, Earth (a spheroid) from the Moon | 5,394 | 6 |
+| lite_sub_point, triaxial stand-in from Earth, three segments | 6,597 | 7 |
+| lite_sub_point, Earth from a supplied spacecraft state 900 km up | 2,980 | 3 |
+| lite_sub_point, triaxial stand-in from a supplied spacecraft state 10 km up | 2,809 | 3 |
+| lite_occulted, Sun by the Moon from a supplied spacecraft state (none) | 7,809 | 8 |
+| lite_occulted, Earth by the Moon from the Sun (partial) | 9,372 | 10 |
+| lite_occulted, Sun by Earth from the Moon (full) | 8,214 | 9 |
+| lite_occulted, Earth by the Sun from the Moon (the Sun is behind) | 7,859 | 8 |
+| lite_sub_point, Saturn (a spheroid) from Cassini (predicted) | 4,777 | 5 |
+| lite_occulted, Sun by Saturn from Cassini (full) | 7,040 | 8 |
+<!-- geometry-table:end -->
+
+A sub-point is a geometric state, an orientation, and the nearest-point solution: from a supplied state, where the state costs almost nothing, the whole call is about 2,900 instructions, of which the orientation is 1,170 and the Newton iteration with its two arctangents the rest. The shape matters little: the triaxial case costs no more than the spheroid. An occultation is two geometric states (target and front body, each from the observer), three arctangents, and two square roots, so it costs about what its two states cost plus 600; evaluating the observer's own path once instead of twice would save a segment or two and has not been done.
+
 ## Reading the numbers
 
 A geometric state costs about 1,700 to 2,000 instructions for each segment on the path between the two bodies, plus a few hundred of fixed overhead. Most of that is the Chebyshev recurrence: three components, position and velocity together, at degree 10 to 12. A body tree shaped so that common queries cross one or two segments keeps them within two to four slices.

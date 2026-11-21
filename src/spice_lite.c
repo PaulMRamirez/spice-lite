@@ -1317,23 +1317,221 @@ int lite_site_view(int32_t site, int32_t target, double et, int32_t corr, double
     return LITE_OK;
 }
 
+/* ---- sub-points and occultation ----------------------------------------- */
+
+#define NEAR_ITER_MAX 24
+
+/* Reads the three radii of a body. Returns 0 when the blob gives none (BODY
+ * flag bit 0 clear) or any of them is not positive. */
+static int body_radii(int idx, double *r)
+{
+    int k;
+    if ((body_flags(idx) & 1u) == 0u) {
+        return 0;
+    }
+    for (k = 0; k < 3; k++) {
+        r[k] = rdf64(body_at(idx) + 8 + 8u * (uint32_t)k);
+        if (!(r[k] > 0.0)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Nearest point q on the ellipsoid with semi-axes r to a point p on or outside
+ * it, and the distance h between them; all in the body-fixed frame. Returns 0
+ * on success, 1 when p is inside the ellipsoid, 2 when the arithmetic left the
+ * finite range.
+ *
+ * The nearest point is q[k] = r[k]^2 p[k] / (r[k]^2 + t), where t >= 0 is the
+ * root of F(t) = sum (r[k] p[k] / (r[k]^2 + t))^2 - 1. F is convex and
+ * decreasing for t >= 0, so Newton's method started at a point where F >= 0
+ * climbs to the root without passing it. Two starting points are tried. The
+ * first, max over k of r[k] (|p[k]| - r[k]), never lies beyond the root and
+ * leaves F <= 2, which bounds the work. The second, rmin (|p| - rmin), is the
+ * exact root for a sphere and close to it for a distant observer of any
+ * shape; it is used when F there is not negative beyond rounding. The loop
+ * stops when F is at the rounding level of its own evaluation (1e-15) or t
+ * stops rising. Four million random cases with axis ratios up to a million
+ * needed at most 12 iterations; a case that reaches NEAR_ITER_MAX is reported
+ * as status 2 rather than answered loosely. */
+static int near_point(const double *r, const double *p, double *q, double *h)
+{
+    double a2[3], w[3], t = 0.0, tc, f, g, pn, rmin, d2;
+    int k, it;
+    f = -1.0;
+    for (k = 0; k < 3; k++) {
+        double u = p[k] / r[k];
+        double lo = r[k] * (lite_fabs(p[k]) - r[k]);
+        f += u * u;
+        a2[k] = r[k] * r[k];
+        w[k] = r[k] * p[k];
+        if (lo > t) {
+            t = lo;
+        }
+    }
+    if (!finite64(f)) {
+        return 2;
+    }
+    if (f < 0.0) {
+        return 1;
+    }
+    rmin = r[0] < r[1] ? r[0] : r[1];
+    rmin = rmin < r[2] ? rmin : r[2];
+    pn = norm3(p);
+    tc = rmin * (pn - rmin);
+    if (tc > t) {
+        f = -1.0;
+        for (k = 0; k < 3; k++) {
+            double u = w[k] / (a2[k] + tc);
+            f += u * u;
+        }
+        if (f >= -1.0e-15) {
+            t = tc;
+        }
+    }
+    for (it = 0; it < NEAR_ITER_MAX; it++) {
+        double tn;
+        f = -1.0;
+        g = 0.0;
+        for (k = 0; k < 3; k++) {
+            double s = a2[k] + t;
+            double u = w[k] / s;
+            f += u * u;
+            g += u * u / s;
+        }
+        if (!(f > 1.0e-15) || !(g > 0.0)) {
+            break; /* converged, or not a number */
+        }
+        tn = t + f / (2.0 * g);
+        if (!(tn > t)) {
+            break;
+        }
+        t = tn;
+    }
+    if (it == NEAR_ITER_MAX) {
+        return 2;
+    }
+    d2 = 0.0;
+    for (k = 0; k < 3; k++) {
+        double s = a2[k] + t;
+        double u = p[k] / s;
+        q[k] = a2[k] * u;
+        d2 += u * u;
+    }
+    *h = t * lite_sqrt(d2);
+    if (!finite64(q[0]) || !finite64(q[1]) || !finite64(q[2]) || !finite64(*h)) {
+        return 2;
+    }
+    return 0;
+}
+
 int lite_sub_point(int32_t body, int32_t observer, double et, double *lon, double *lat, double *alt)
 {
-    (void)body;
-    (void)observer;
-    (void)et;
-    (void)lon;
-    (void)lat;
-    (void)alt;
-    return G.ready ? LITE_UNSUPPORTED : LITE_BAD_BLOB;
+    double rot[9], s[6], r[3], p[3], q[3], h = 0.0;
+    int bi, oi, st, k;
+    if (!G.ready) {
+        return LITE_BAD_BLOB;
+    }
+    if (lon == 0 || lat == 0 || alt == 0 || !finite64(et)) {
+        return LITE_BAD_ARG;
+    }
+    bi = body_index(body);
+    oi = body_index(observer);
+    if (bi < 0 || oi < 0) {
+        return LITE_NO_PATH;
+    }
+    if (!body_radii(bi, r)) {
+        return LITE_UNSUPPORTED;
+    }
+    st = lite_orient(body, et, rot);
+    if (st != LITE_OK) {
+        return st;
+    }
+    st = state_rel(oi, bi, et, 1, s, 0);
+    if (st != LITE_OK) {
+        return st;
+    }
+    for (k = 0; k < 3; k++) {
+        p[k] = rot[3 * k] * s[0] + rot[3 * k + 1] * s[1] + rot[3 * k + 2] * s[2];
+    }
+    st = near_point(r, p, q, &h);
+    if (st != 0) {
+        return st == 1 ? LITE_BAD_ARG : LITE_UNSUPPORTED;
+    }
+    *lon = lite_atan2(q[1], q[0]);
+    *lat = lite_atan2(q[2], lite_sqrt(q[0] * q[0] + q[1] * q[1]));
+    *alt = h;
+    return LITE_OK;
 }
 
 int lite_occulted(int32_t target, int32_t by, int32_t observer, double et, int32_t *code)
 {
-    (void)target;
-    (void)by;
-    (void)observer;
-    (void)et;
-    (void)code;
-    return G.ready ? LITE_UNSUPPORTED : LITE_BAD_BLOB;
+    double rt[3], rf[3], b[6], f[6], c[3];
+    double rb, rfm, pb, pf, ab, af, sep;
+    int ti, fi, oi, st;
+    if (!G.ready) {
+        return LITE_BAD_BLOB;
+    }
+    if (code == 0 || !finite64(et)) {
+        return LITE_BAD_ARG;
+    }
+    ti = body_index(target);
+    fi = body_index(by);
+    oi = body_index(observer);
+    if (ti < 0 || fi < 0 || oi < 0) {
+        return LITE_NO_PATH;
+    }
+    if (ti == fi) {
+        return LITE_BAD_ARG;
+    }
+    if (!body_radii(ti, rt) || !body_radii(fi, rf)) {
+        return LITE_UNSUPPORTED;
+    }
+    st = state_rel(ti, oi, et, 1, b, 0);
+    if (st != LITE_OK) {
+        return st;
+    }
+    st = state_rel(fi, oi, et, 1, f, 0);
+    if (st != LITE_OK) {
+        return st;
+    }
+    /* Each body is a sphere of its mean radius. pb and pf are the squared
+     * lengths of the tangents from the observer to the two spheres. */
+    rb = (rt[0] + rt[1] + rt[2]) / 3.0;
+    rfm = (rf[0] + rf[1] + rf[2]) / 3.0;
+    pb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]) - rb * rb;
+    pf = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]) - rfm * rfm;
+    if (!finite64(pb) || !finite64(pf)) {
+        return LITE_UNSUPPORTED;
+    }
+    if (!(pb > 0.0) || !(pf > 0.0)) {
+        return LITE_BAD_ARG; /* the observer is on or inside one of the spheres */
+    }
+    /* The tangent lengths differ by the observer's distance from the plane
+     * that separates two disjoint spheres, so the shorter tangent belongs to
+     * the sphere every shared line of sight meets first. */
+    if (!(pf < pb)) {
+        *code = LITE_OCC_NONE;
+        return LITE_OK;
+    }
+    ab = lite_atan2(rb, lite_sqrt(pb));
+    af = lite_atan2(rfm, lite_sqrt(pf));
+    c[0] = f[1] * b[2] - f[2] * b[1];
+    c[1] = f[2] * b[0] - f[0] * b[2];
+    c[2] = f[0] * b[1] - f[1] * b[0];
+    sep = lite_atan2(norm3(c), f[0] * b[0] + f[1] * b[1] + f[2] * b[2]);
+    if (!finite64(sep)) {
+        return LITE_UNSUPPORTED;
+    }
+    if (!(sep < af + ab)) {
+        *code = LITE_OCC_NONE;
+    } else if (af >= ab && sep <= af - ab) {
+        *code = LITE_OCC_FULL;
+    } else if (ab > af && sep <= ab - af) {
+        *code = LITE_OCC_ANNULAR;
+    } else {
+        *code = LITE_OCC_PARTIAL;
+    }
+    return LITE_OK;
 }

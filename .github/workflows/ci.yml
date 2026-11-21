@@ -48,4 +48,6 @@ jobs:
         run: |
           pnpm slice
           node tools/make-vectors.mjs
+          pnpm slice:geometry
+          node tools/make-vectors-geometry.mjs
           git diff --exit-code -- test/blobs test/vectors

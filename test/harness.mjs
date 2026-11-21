@@ -66,6 +66,14 @@ export async function load(blobBytes, { skipCrc = false } = {}) {
       const st = x.lite_site_view(site, target, et, corr, out, out + 8, out + 16);
       return { status: st, az: f64(0), el: f64(1), range: f64(2) };
     },
+    subPoint(body, observer, et) {
+      const st = x.lite_sub_point(body, observer, et, out, out + 8, out + 16);
+      return { status: st, lon: f64(0), lat: f64(1), alt: f64(2) };
+    },
+    occulted(target, by, observer, et) {
+      const st = x.lite_occulted(target, by, observer, et, out);
+      return { status: st, code: i32(0) };
+    },
     // One query line in, one result line out; the native driver's format.
     run(line) {
       const t = line.trim().split(/\s+/);
@@ -79,6 +87,8 @@ export async function load(blobBytes, { skipCrc = false } = {}) {
         case 'gap': { const r = api.gap(fromHex(t[1])); return r.status + (r.status === 0 ? hx([r.dpos, r.dvel]) : ''); }
         case 'orient': { const r = api.orient(+t[1], fromHex(t[2])); return r.status + (r.status === 0 ? hx(r.rot) : ''); }
         case 'siteview': { const r = api.siteView(+t[1], +t[2], fromHex(t[3]), +t[4]); return r.status + (r.status === 0 ? hx([r.az, r.el, r.range]) : ''); }
+        case 'subpoint': { const r = api.subPoint(+t[1], +t[2], fromHex(t[3])); return r.status + (r.status === 0 ? hx([r.lon, r.lat, r.alt]) : ''); }
+        case 'occulted': { const r = api.occulted(+t[1], +t[2], +t[3], fromHex(t[4])); return r.status + (r.status === 0 ? ' i' + r.code : ''); }
         default: return '?';
       }
     },
