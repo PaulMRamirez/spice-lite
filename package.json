@@ -11,8 +11,10 @@
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:native": "bash scripts/build-native.sh",
     "slice": "node tools/slicer.mjs test/blobs/cassini-soi.json test/blobs/cassini-soi.slb test/blobs/cassini-soi.report.json && node tools/slicer.mjs test/blobs/sun-earth-moon.json test/blobs/sun-earth-moon.slb test/blobs/sun-earth-moon.report.json",
+    "slice:orbiter": "node tools/slicer.mjs test/blobs/orbiter.json test/blobs/orbiter.slb test/blobs/orbiter.report.json && node tools/make-vectors-orbiter.mjs",
     "test": "node --test test/*.test.mjs",
     "cost": "node scripts/measure-cost.mjs",
+    "cost:orbit": "node scripts/measure-cost-orbit.mjs",
     "verify": "pnpm build:wasm && pnpm build:native && pnpm test"
   },
   "devDependencies": {
