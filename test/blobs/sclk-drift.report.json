@@ -1,0 +1,114 @@
+{
+  "slicer": "0.1.0",
+  "name": "sclk-drift",
+  "window": {
+    "start": "2004-06-27T00:00:00",
+    "stop": "2004-07-27T00:00:00"
+  },
+  "windowEt": [
+    141566464.1842146,
+    144158464.1833889
+  ],
+  "kernels": [
+    {
+      "name": "naif0012.tls",
+      "sha256": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b"
+    },
+    {
+      "name": "de440s-inner-cassini.bsp",
+      "sha256": "44d52cff8b9a1cabdaeb38c5b94aedbc520176b10989a49c379b7245625df1ca"
+    },
+    {
+      "name": "synthetic-tt-drift.tsc",
+      "sha256": "0277702b7f11c12204c1841d8165c81817d8854b42f99bbeaa757503fcc8b12a"
+    }
+  ],
+  "ephem": [
+    {
+      "target": 10,
+      "center": 0,
+      "kind": 1,
+      "source": 0,
+      "degree": 10,
+      "recordCount": 2,
+      "tStart": 141566464.1842146,
+      "interval": 1382400,
+      "maxPosErr": 2.856795587963514e-8,
+      "maxVelErr": 4.4945045816800155e-12,
+      "bytes": 528
+    }
+  ],
+  "orient": [],
+  "sites": [],
+  "time": [
+    {
+      "base": 3,
+      "hostStart": 566464.184,
+      "etStart": 141566464.18421465,
+      "rate": 0.9999999996769133
+    },
+    {
+      "base": 3,
+      "hostStart": 1000000,
+      "etStart": 142000000.00007454,
+      "rate": 0.99999989967576
+    },
+    {
+      "base": 3,
+      "hostStart": 10000000,
+      "etStart": 142499999.9499123,
+      "rate": 0.9999998996774293
+    },
+    {
+      "base": 3,
+      "hostStart": 10500000,
+      "etStart": 142999999.89975023,
+      "rate": 1.0000001996856105
+    },
+    {
+      "base": 3,
+      "hostStart": 11467895.507812,
+      "etStart": 143967895.60083795,
+      "rate": 1.0000001996947894
+    },
+    {
+      "base": 3,
+      "hostStart": 11500000,
+      "etStart": 144000000.103437,
+      "rate": 0.9999999996962671
+    }
+  ],
+  "timeFit": [
+    {
+      "base": 3,
+      "sclk": -901,
+      "timeSystem": "TT",
+      "ticksPerHostSecond": 256,
+      "toleranceSeconds": 0.000001,
+      "maxErrSeconds": 9.238719940185547e-7,
+      "maxErrAtHostSecond": 10999543.726443,
+      "pieces": 6,
+      "maxPieces": 256,
+      "checkedReadings": 12294,
+      "partitions": [
+        {
+          "partition": 1,
+          "hostFirst": 566464.184,
+          "hostLast": 1499999.999999,
+          "pieces": 2
+        },
+        {
+          "partition": 2,
+          "hostFirst": 10000000,
+          "hostLast": 11658464.079999,
+          "pieces": 4
+        }
+      ]
+    }
+  ],
+  "bytes": 1624,
+  "coverageEt": [
+    141566464.1842146,
+    144158464.1833889
+  ]
+}

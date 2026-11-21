@@ -1,0 +1,32 @@
+KPL/SCLK
+
+SYNTHETIC spacecraft clock kernel for spice-lite tests. This is not a real
+mission clock and must never be used for anything but testing. It was written
+by hand for test/sclk.test.mjs to exercise what the cassini-demo kernel of
+cspice-wasm does not: a clock that runs on TT (time system 2), so the periodic
+TDB minus TT term shows up in the mapping to ET; four coefficient records with
+different rates, the last of which also steps the parallel time forward by 4
+milliseconds (a discontinuity); and two partitions, the second of which starts
+at a much larger clock count (the clock was set forward, not reset).
+
+Clock -901 has two fields: a count of nominal seconds and a count of 1/256
+second. Zero is at 141000000 TT seconds past J2000 (2004-06-20). Partition 1
+covers clock counts 0 to 1500000; partition 2 starts at count 10000000.
+
+\begindata
+SCLK_KERNEL_ID            = ( @2026-11-20T00:00:00 )
+SCLK_DATA_TYPE_901        = ( 1 )
+SCLK01_TIME_SYSTEM_901    = ( 2 )
+SCLK01_N_FIELDS_901       = ( 2 )
+SCLK01_MODULI_901         = ( 4294967296 256 )
+SCLK01_OFFSETS_901        = ( 0 0 )
+SCLK01_OUTPUT_DELIM_901   = ( 1 )
+SCLK_PARTITION_START_901  = ( 0.0000000000000E+00
+                              2.5600000000000E+09 )
+SCLK_PARTITION_END_901    = ( 3.8400000000000E+08
+                              1.0025600000000E+12 )
+SCLK01_COEFFICIENTS_901   = ( 0.0000000000000E+00  1.4100000000000E+08  1.0000000000000E+00
+                              2.5600000000000E+08  1.4200000000000E+08  9.9999990000000E-01
+                              5.1200000000000E+08  1.4299999990000E+08  1.0000002000000E+00
+                              7.6800000000000E+08  1.4400000010400E+08  1.0000000000000E+00 )
+\begintext

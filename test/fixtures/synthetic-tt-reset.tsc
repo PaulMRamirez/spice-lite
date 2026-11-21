@@ -1,0 +1,28 @@
+KPL/SCLK
+
+SYNTHETIC spacecraft clock kernel for spice-lite tests. This is not a real
+mission clock and must never be used for anything but testing. It was written
+by hand for test/sclk.test.mjs to exercise a clock reset: partition 2 starts
+again at count zero, so the same clock reading occurs in both partitions and
+one host time base cannot cover both.
+
+Clock -902 has two fields: a count of nominal seconds and a count of
+milliseconds. It runs on TT (time system 2). Zero is at 141000000 TT seconds
+past J2000 (2004-06-20). Partition 1 covers clock counts 0 to 1500000; the
+clock then restarts at zero and runs slightly fast.
+
+\begindata
+SCLK_KERNEL_ID            = ( @2026-11-20T00:00:00 )
+SCLK_DATA_TYPE_902        = ( 1 )
+SCLK01_TIME_SYSTEM_902    = ( 2 )
+SCLK01_N_FIELDS_902       = ( 2 )
+SCLK01_MODULI_902         = ( 4294967296 1000 )
+SCLK01_OFFSETS_902        = ( 0 0 )
+SCLK01_OUTPUT_DELIM_902   = ( 1 )
+SCLK_PARTITION_START_902  = ( 0.0000000000000E+00
+                              0.0000000000000E+00 )
+SCLK_PARTITION_END_902    = ( 1.5000000000000E+09
+                              1.0000000000000E+13 )
+SCLK01_COEFFICIENTS_902   = ( 0.0000000000000E+00  1.4100000000000E+08  1.0000000000000E+00
+                              1.5000000000000E+09  1.4250000000000E+08  1.0000001000000E+00 )
+\begintext
