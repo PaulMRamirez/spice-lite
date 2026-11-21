@@ -1170,18 +1170,39 @@ static int state_rel(int a, int b, double et, int use_sup, double *out, int *src
     double acc[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     double s[6];
     int cur;
-    for (cur = a; cur >= 0 && na < MAX_DEPTH + 3; cur = next_of(cur, et, use_sup)) {
-        pa[na++] = cur;
-    }
-    for (cur = b; cur >= 0 && nb < MAX_DEPTH + 3; cur = next_of(cur, et, use_sup)) {
-        pb[nb++] = cur;
-    }
-    for (i = 0; i < na && la < 0; i++) {
-        for (j = 0; j < nb; j++) {
-            if (pa[i] == pb[j]) {
-                la = i;
-                lb = j;
-                break;
+    /* One link, the commonest query (a body from the body it hangs from, or the
+     * reverse): no chains to build and search. The general search would find
+     * the same single link, since the tree has no cycles and a supplied center
+     * never hangs from its spacecraft. Otherwise the two nodes already looked
+     * up start the chains. */
+    cur = next_of(a, et, use_sup);
+    if (cur == b) {
+        pa[0] = a;
+        la = 1;
+        lb = 0;
+    } else {
+        int bn = next_of(b, et, use_sup);
+        if (bn == a) {
+            pb[0] = b;
+            la = 0;
+            lb = 1;
+        } else {
+            pa[na++] = a;
+            for (; cur >= 0 && na < MAX_DEPTH + 3; cur = next_of(cur, et, use_sup)) {
+                pa[na++] = cur;
+            }
+            pb[nb++] = b;
+            for (cur = bn; cur >= 0 && nb < MAX_DEPTH + 3; cur = next_of(cur, et, use_sup)) {
+                pb[nb++] = cur;
+            }
+            for (i = 0; i < na && la < 0; i++) {
+                for (j = 0; j < nb; j++) {
+                    if (pa[i] == pb[j]) {
+                        la = i;
+                        lb = j;
+                        break;
+                    }
+                }
             }
         }
     }

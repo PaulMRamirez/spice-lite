@@ -160,21 +160,21 @@ What this means for use. As a compact long-arc ephemeris for a real low orbiter,
 
 ## Cost under SpaceWasm
 
-`scripts/measure-cost-orbit.mjs`, with the same host harness and method as `scripts/measure-cost.mjs` (`docs/cost-measurements.md`), on the shipped one-page module and the `orbiter` test blob. Each orbiter is queried at 400 times across the window, because the cost varies with the number of Kepler steps. The last row is the worst case the model accepts: a record with its eccentricity forced to the limit of 0.9, queried at 1,000 times around the orbit with the periapsis in each of four directions. Author's clang 18 build.
+`scripts/measure-cost-orbit.mjs`, with the same host harness and method as `scripts/measure-cost.mjs` (`docs/cost-measurements.md`), on the shipped one-page module and the `orbiter` test blob. Each orbiter is queried at 400 times across the window, because the cost varies with the number of Kepler steps. The last row is the worst case the model accepts: a record with its eccentricity forced to the limit of 0.9, queried at 1,000 times around the orbit with the periapsis in each of four directions. Author's clang 18 build; the CI build's figures are in the paragraph below the table.
 
 <!-- cost-table:start -->
 | Call | Instructions (least to most) | Mean | Slices of 1,000 |
 | --- | --- | --- | --- |
-| lite_state, near-circular low Earth orbiter (e = 0.001), geometric, one kind 4 segment | 2,127 to 2,277 | 2,269 | 3 |
-| lite_state, near-circular low lunar orbiter (e = 0.004), geometric, one kind 4 segment | 2,079 to 2,229 | 2,226 | 3 |
-| lite_state, eccentric Earth orbiter (e = 0.3), geometric, one kind 4 segment | 2,061 to 2,209 | 2,207 | 3 |
-| lite_state, low Earth orbiter from the Earth-Moon barycenter (kind 4, then kind 1 at degree 12) | 3,600 | 3,600 | 4 |
-| lite_state, low Earth orbiter from the Moon (kind 4, then two of kind 1) | 5,057 | 5,057 | 6 |
-| lite_state, low lunar orbiter from the low Earth orbiter (two of kind 4, two of kind 1) | 6,731 | 6,731 | 7 |
-| lite_state, one kind 4 segment with the eccentricity forced to the limit of 0.9 (cost only) | 2,273 to 2,459 | 2,387 | 3 |
+| lite_state, near-circular low Earth orbiter (e = 0.001), geometric, one kind 4 segment | 1,836 to 1,986 | 1,978 | 2 |
+| lite_state, near-circular low lunar orbiter (e = 0.004), geometric, one kind 4 segment | 1,788 to 1,938 | 1,935 | 2 |
+| lite_state, eccentric Earth orbiter (e = 0.3), geometric, one kind 4 segment | 1,770 to 1,918 | 1,916 | 2 |
+| lite_state, low Earth orbiter from the Earth-Moon barycenter (kind 4, then kind 1 at degree 12) | 3,554 | 3,554 | 4 |
+| lite_state, low Earth orbiter from the Moon (kind 4, then two of kind 1) | 5,029 | 5,029 | 6 |
+| lite_state, low lunar orbiter from the low Earth orbiter (two of kind 4, two of kind 1) | 6,703 | 6,703 | 7 |
+| lite_state, one kind 4 segment with the eccentricity forced to the limit of 0.9 (cost only) | 1,982 to 2,168 | 2,096 | 3 |
 <!-- cost-table:end -->
 
-A kind 4 state costs a little more than a degree 12 Chebyshev record and is within the 2,500-instruction ceiling `SPEC.md` sets for a one-segment geometric state at every eccentricity the model accepts: the worst call at the limit of 0.9 is 2,459 instructions, and the script holds that case to the same 2,500 as the others. Most of the cost is trigonometry: three full sine and cosine pairs (mean argument, inclination, node) and one more for each Kepler step after the first, at about 150 instructions a step.
+A kind 4 state costs a little more than a degree 12 Chebyshev record and is within the 2,500-instruction ceiling `SPEC.md` sets for a one-segment geometric state at every eccentricity the model accepts: the worst call at the limit of 0.9 is 2,168 instructions (2,190 with the CI build, which has no `wasm-opt`; `docs/cost-measurements.md` explains the difference), and the script holds that case to the same 2,500 as the others. The margin was 41 instructions (10 on the CI build) until the path from `lite_state` to the segment was shortened: a body asked for relative to the body it hangs from, or the reverse, is one link, and is now recognized as such before any chain of ancestors is built and searched. That took about 290 instructions off every one-segment state, of any kind, changed no arithmetic (the committed vectors still reproduce bit for bit), and made every longer path a little cheaper too, because the two lookups it starts with are reused. Most of the cost is trigonometry: three full sine and cosine pairs (mean argument, inclination, node) and one more for each Kepler step after the first, at about 150 instructions a step.
 
 ### The Kepler solve
 
@@ -204,4 +204,4 @@ The wider record and the new solve grew the module by 411 bytes with the author'
 - **Reference plane.** Elements are referred to J2000. For an orbiter of a body whose equator is tilted from J2000 the node and inclination both drift as the orbit plane precesses about the body's pole; straight-line rates follow that over a day or two (the lunar case above does exactly this), but a per-segment pole, or quadratic terms for the plane, would hold longer.
 - **Conditioning of the fit.** On a near-circular orbit the first harmonics are nearly interchangeable with small changes to the eccentricity vector, the inclination, and the node. The damped least-squares fit copes, and the declared error is measured after the fact either way, but records shorter than an orbit fit worse than they should.
 - **Continuity.** Neighboring records are fitted independently, so the state steps at a record boundary by up to twice the declared error.
-- **Cost margin.** The worst case is 41 instructions under the ceiling with the author's compiler. Another compiler version may land differently, and the cost script will say so.
+- **Cost margin.** The worst case is 310 instructions under the ceiling on the CI build and 332 on the author's. What is left is almost all arithmetic inside the record's evaluation; cutting further would mean changing the Kepler solve or the trigonometry, and with them the bits of every answer.

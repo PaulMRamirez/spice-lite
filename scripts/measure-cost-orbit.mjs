@@ -3,7 +3,9 @@
 // and method as scripts/measure-cost.mjs, on the synthetic orbiter test blob.
 // Writes build/cost-orbit.json and prints a table.
 //
-//   node scripts/measure-cost-orbit.mjs
+//   node scripts/measure-cost-orbit.mjs [--update-doc]
+//
+// With --update-doc, rewrites the cost table of docs/orbit-segment.md.
 //
 // Needs cargo (to build bench/spacewasm-host) and the WebAssembly toolchain. A
 // kind 4 segment is held to the one-segment ceiling of SPEC.md (2,500
@@ -114,8 +116,16 @@ paths.forEach(([, label, ceiling], k) => {
 }
 writeFileSync(resolve(root, 'build/cost-orbit.json'), JSON.stringify({ spacewasm: '0.8.0-rc.3', moduleBytes: readFileSync(wasm).length, rows }, null, 2) + '\n');
 console.log(`module ${fmt(readFileSync(wasm).length)} bytes; ${N} times per orbiter, ${fmt(worstDirections.length * 1000)} at the eccentricity limit`);
-console.log(['| Call | Instructions (least to most) | Mean | Slices of 1,000 |', '| --- | --- | --- | --- |',
-  ...rows.map((r) => `| ${r.label} | ${r.min === r.max ? fmt(r.min) : fmt(r.min) + ' to ' + fmt(r.max)} | ${fmt(r.mean)} | ${Math.ceil(r.max / 1000)} |`)].join('\n'));
+const table = ['| Call | Instructions (least to most) | Mean | Slices of 1,000 |', '| --- | --- | --- | --- |',
+  ...rows.map((r) => `| ${r.label} | ${r.min === r.max ? fmt(r.min) : fmt(r.min) + ' to ' + fmt(r.max)} | ${fmt(r.mean)} | ${Math.ceil(r.max / 1000)} |`)].join('\n');
+console.log(table);
+if (process.argv.includes('--update-doc')) {
+  const docPath = resolve(root, 'docs/orbit-segment.md');
+  const doc = readFileSync(docPath, 'utf8');
+  const [a, b] = ['<!-- cost-table:start -->', '<!-- cost-table:end -->'];
+  if (!doc.includes(a) || !doc.includes(b)) throw new Error('docs/orbit-segment.md lacks the cost table markers');
+  writeFileSync(docPath, doc.slice(0, doc.indexOf(a) + a.length) + '\n' + table + '\n' + doc.slice(doc.indexOf(b)));
+}
 if (failures.length) {
   console.error('\nover a ceiling or failed:\n  ' + failures.join('\n  '));
   process.exit(1);
