@@ -2,7 +2,7 @@
 #
 # Builds the native test driver twice: plain, for the cross-host exactness
 # check, and with AddressSanitizer and UndefinedBehaviorSanitizer, for the
-# robustness run over corrupted blobs. Uses NATIVE_CC (default cc); the compiler
+# robustness run over corrupted blobs; and the scan of the kind 4 Kepler solve. Uses NATIVE_CC (default cc); the compiler
 # needs its sanitizer runtime installed.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,4 +12,7 @@ FLAGS=(-std=c99 -O2 -ffp-contract=off -fno-math-errno -Wall -Wextra -Werror -I"$
 "$CC" "${FLAGS[@]}" -o "$ROOT/build/driver" "$ROOT/src/spice_lite.c" "$ROOT/test/driver.c" -lm
 "$CC" "${FLAGS[@]}" -g -fsanitize=address,undefined -fno-sanitize-recover=all \
   -o "$ROOT/build/driver-san" "$ROOT/src/spice_lite.c" "$ROOT/test/driver.c" -lm
-echo "built build/driver and build/driver-san"
+# the scan of the kind 4 Kepler solve; it includes the library source, so the
+# library's unused static functions are expected
+"$CC" "${FLAGS[@]}" -Wno-unused-function -o "$ROOT/build/kepler-scan" "$ROOT/test/kepler-scan.c" -lm
+echo "built build/driver, build/driver-san, and build/kepler-scan"

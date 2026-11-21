@@ -51,7 +51,7 @@
 
 /* EPHEM kind 4, the compact orbit model: record size, the largest squared
  * eccentricity it accepts (0.9 squared), and the cap on Kepler iterations. */
-#define ORBIT_REC 104u
+#define ORBIT_REC 160u
 #define ORBIT_E2_MAX 0.81
 #define ORBIT_KEPLER_MAX 6
 
@@ -824,12 +824,17 @@ static int grid_locate(double t, double t0, double dt, uint32_t count, uint32_t 
 /* Kind 4: one record of the compact orbit model at tau seconds from the
  * record's mid epoch. The record holds six elements (semi-major axis, the
  * eccentricity vector in the orbit plane measured from the ascending node,
- * inclination, node, and mean argument of latitude), their rates, and six
- * coefficients of corrections in twice the argument of latitude: the form of
- * the GPS broadcast ephemeris, regular at zero eccentricity. The velocity is
- * the exact time derivative of the position formula, so the record needs no
- * gravitational parameter. Ellipses only: an eccentricity over 0.9, a
- * semi-major axis that is not positive, or an angle too large for the
+ * inclination, node, and mean argument of latitude), their rates, quadratic
+ * terms for the mean argument and the eccentricity vector, and 19
+ * coefficients of displacements in kilometers: radial, along the track, and
+ * across it, each with a cosine and a sine term in one, two, and three times
+ * the argument of latitude, plus a constant across the track. It is the idea
+ * of the GPS broadcast ephemeris (elements, rates, and harmonic corrections),
+ * regular at zero eccentricity and with enough harmonics for an eccentric
+ * orbit. The velocity is the exact time derivative of the position formula,
+ * so the record needs no gravitational parameter. Ellipses only: an
+ * eccentricity over 0.9, a semi-major axis that is not positive, a
+ * coefficient that is not a number, or an angle too large for the
  * trigonometry returns LITE_UNSUPPORTED. Every divisor below is bounded away
  * from zero by those checks, and the Kepler loop is capped. */
 static int sincos_near(double x, double *s, double *c)
@@ -894,29 +899,43 @@ static int kepler_offset(double ka, double kb, double *sg, double *cg)
     return 0;
 }
 
+/* Three harmonics of the argument of latitude for one displacement: q holds
+ * the cosine and sine coefficients of u, 2u, and 3u as 32-bit floats, h the
+ * cosines and sines themselves. Returns the sum and writes its derivative with
+ * respect to u. */
+static double orbit_harmonics(const uint8_t *q, const double *h, double *der)
+{
+    double c1 = rdf32(q), s1 = rdf32(q + 4), c2 = rdf32(q + 8);
+    double s2 = rdf32(q + 12), c3 = rdf32(q + 16), s3 = rdf32(q + 20);
+    *der = (s1 * h[0] - c1 * h[1]) + 2.0 * (s2 * h[2] - c2 * h[3]) + 3.0 * (s3 * h[4] - c3 * h[5]);
+    return (c1 * h[0] + s1 * h[1]) + (c2 * h[2] + s2 * h[3]) + (c3 * h[4] + s3 * h[5]);
+}
+
 static int eval_orbit(const uint8_t *p, double tau, double *s)
 {
     double a1 = rdf32(p + 56), ex1 = rdf32(p + 60), ey1 = rdf32(p + 64);
     double inc1 = rdf32(p + 68), node1 = rdf32(p + 72), lam2 = rdf32(p + 76);
-    double cuc = rdf32(p + 80), cus = rdf32(p + 84), crc = rdf32(p + 88);
-    double crs = rdf32(p + 92), cic = rdf32(p + 96), cis = rdf32(p + 100);
     double lam1 = rdf64(p + 48);
+    double eq = rdf32(p + 80) * tau;
     double a = rdf64(p) + a1 * tau;
-    double ex = rdf64(p + 8) + ex1 * tau;
-    double ey = rdf64(p + 16) + ey1 * tau;
+    double ex = rdf64(p + 8) + (ex1 - eq * ey1) * tau;
+    double ey = rdf64(p + 16) + (ey1 + eq * ex1) * tau;
     double inc = rdf64(p + 24) + inc1 * tau;
     double node = rdf64(p + 32) + node1 * tau;
     double lam = rdf64(p + 40) + (lam1 + lam2 * tau) * tau;
     double lam_dot = lam1 + 2.0 * lam2 * tau;
     double e2 = ex * ex + ey * ey;
-    double sl, cl, sg, cg;
+    double exd, eyd, sl, cl, sg, cg;
     double sf, cf, rho, f_dot, w, beta, beta_dot, dd, dd_dot;
-    double xn, yn, xn_dot, yn_dot, r, r_dot, cu, su, u_dot, c2, s2, two_u;
-    double du, dr, di, uc_dot, rc_dot, ic_dot, sd, cd, cuc2, suc2, rc;
-    double xp, yp, xp_dot, yp_dot, si, ci, so, co, x, y;
+    double xn, yn, xn_dot, yn_dot, r, r_dot, u_dot, h[6];
+    double dr, dt, dw, dr_u, dt_u, dw_u, rc, rc_dot, dt_dot, dw_dot;
+    double xp, yp, xp_dot, yp_dot, si, ci, so, co, q, z, q_dot, x, y;
     if (!(a > 0.0) || !finite64(a) || !(e2 <= ORBIT_E2_MAX)) {
         return LITE_UNSUPPORTED;
     }
+    /* the rates of the eccentricity vector at tau: its velocity has turned */
+    exd = ex1 - 2.0 * eq * ey1;
+    eyd = ey1 + 2.0 * eq * ex1;
     if (lite_sincos(lam, &sl, &cl)) {
         return LITE_UNSUPPORTED;
     }
@@ -927,51 +946,57 @@ static int eval_orbit(const uint8_t *p, double tau, double *s)
     sf = sl * cg + cl * sg;
     cf = cl * cg - sl * sg;
     rho = 1.0 - (ex * cf + ey * sf);
-    f_dot = (lam_dot + (ex1 * sf - ey1 * cf)) / rho;
+    f_dot = (lam_dot + (exd * sf - eyd * cf)) / rho;
     /* position in the orbit plane, in units of a, x toward the node */
     w = lite_sqrt(1.0 - e2);
     beta = 1.0 / (1.0 + w);
-    beta_dot = ((ex * ex1 + ey * ey1) * beta * beta) / w;
+    beta_dot = ((ex * exd + ey * eyd) * beta * beta) / w;
     dd = ey * cf - ex * sf;
-    dd_dot = (ey1 * cf - ex1 * sf) - (ey * sf + ex * cf) * f_dot;
+    dd_dot = (eyd * cf - exd * sf) - (ey * sf + ex * cf) * f_dot;
     xn = (cf - ex) - beta * ey * dd;
     yn = (sf - ey) + beta * ex * dd;
-    xn_dot = (-sf * f_dot - ex1) - ((beta_dot * ey + beta * ey1) * dd + beta * ey * dd_dot);
-    yn_dot = (cf * f_dot - ey1) + ((beta_dot * ex + beta * ex1) * dd + beta * ex * dd_dot);
+    xn_dot = (-sf * f_dot - exd) - ((beta_dot * ey + beta * eyd) * dd + beta * ey * dd_dot);
+    yn_dot = (cf * f_dot - eyd) + ((beta_dot * ex + beta * exd) * dd + beta * ex * dd_dot);
     r = a * rho;
-    r_dot = a1 * rho - a * ((ex1 * cf + ey1 * sf) + dd * f_dot);
-    /* argument of latitude u, and the corrections in 2u */
-    cu = xn / rho;
-    su = yn / rho;
+    r_dot = a1 * rho - a * ((exd * cf + eyd * sf) + dd * f_dot);
+    /* argument of latitude u: its cosine and sine, and those of 2u and 3u */
+    h[0] = xn / rho;
+    h[1] = yn / rho;
     u_dot = (xn * yn_dot - yn * xn_dot) / (rho * rho);
-    c2 = cu * cu - su * su;
-    s2 = 2.0 * cu * su;
-    du = cuc * c2 + cus * s2;
-    dr = crc * c2 + crs * s2;
-    di = cic * c2 + cis * s2;
-    two_u = 2.0 * u_dot;
-    uc_dot = u_dot + two_u * (cus * c2 - cuc * s2);
-    rc_dot = r_dot + two_u * (crs * c2 - crc * s2);
-    ic_dot = inc1 + two_u * (cis * c2 - cic * s2);
-    if (sincos_near(du, &sd, &cd) || lite_sincos(inc + di, &si, &ci) ||
-        lite_sincos(node, &so, &co)) {
+    h[2] = h[0] * h[0] - h[1] * h[1];
+    h[3] = 2.0 * h[0] * h[1];
+    h[4] = h[2] * h[0] - h[3] * h[1];
+    h[5] = h[3] * h[0] + h[2] * h[1];
+    /* displacements in kilometers: radial, along the track, and across it */
+    dr = orbit_harmonics(p + 84, h, &dr_u);
+    dt = orbit_harmonics(p + 108, h, &dt_u);
+    dw = orbit_harmonics(p + 132, h, &dw_u) + rdf32(p + 156);
+    if (!finite64(dr + dt + dw)) { /* a coefficient that is not a number */
         return LITE_UNSUPPORTED;
     }
-    cuc2 = cu * cd - su * sd;
-    suc2 = su * cd + cu * sd;
+    if (lite_sincos(inc, &si, &ci) || lite_sincos(node, &so, &co)) {
+        return LITE_UNSUPPORTED;
+    }
     rc = r + dr;
-    xp = rc * cuc2;
-    yp = rc * suc2;
-    xp_dot = rc_dot * cuc2 - yp * uc_dot;
-    yp_dot = rc_dot * suc2 + xp * uc_dot;
-    x = xp * co - yp * ci * so;
-    y = xp * so + yp * ci * co;
+    rc_dot = r_dot + dr_u * u_dot;
+    dt_dot = dt_u * u_dot;
+    dw_dot = dw_u * u_dot;
+    xp = rc * h[0] - dt * h[1];
+    yp = rc * h[1] + dt * h[0];
+    xp_dot = (rc_dot * h[0] - dt_dot * h[1]) - yp * u_dot;
+    yp_dot = (rc_dot * h[1] + dt_dot * h[0]) + xp * u_dot;
+    /* tilt by the inclination about the node line, then turn by the node */
+    q = yp * ci - dw * si;
+    z = yp * si + dw * ci;
+    q_dot = (yp_dot * ci - dw_dot * si) - z * inc1;
+    x = xp * co - q * so;
+    y = xp * so + q * co;
     s[0] = x;
     s[1] = y;
-    s[2] = yp * si;
-    s[3] = (xp_dot * co - yp_dot * ci * so) + yp * si * so * ic_dot - y * node1;
-    s[4] = (xp_dot * so + yp_dot * ci * co) - yp * si * co * ic_dot + x * node1;
-    s[5] = yp_dot * si + yp * ci * ic_dot;
+    s[2] = z;
+    s[3] = (xp_dot * co - q_dot * so) - y * node1;
+    s[4] = (xp_dot * so + q_dot * co) + x * node1;
+    s[5] = (yp_dot * si + dw_dot * ci) + q * inc1;
     return LITE_OK;
 }
 

@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { load, runAll, prng, root } from './harness.mjs';
 import { integrate, energy, furnishSynthetic } from '../tools/synth-orbiter.mjs';
-import { orbitEval, unpackRecord, RECORD_BYTES } from '../tools/orbit-model.mjs';
+import { orbitEval, keplerOffset, unpackRecord, RECORD_BYTES, E_MAX } from '../tools/orbit-model.mjs';
 
 const name = 'orbiter';
 const blobPath = resolve(root, `test/blobs/${name}.slb`);
@@ -26,6 +26,7 @@ const kernelDir = process.env.SPICE_LITE_KERNELS;
 const have = kernelDir && config.kernels.every((k) => existsSync(resolve(kernelDir, k)));
 const skip = !have && 'SPICE_LITE_KERNELS is not set or lacks the kernels';
 const san = resolve(root, 'build/driver-san');
+const scan = resolve(root, 'build/kepler-scan');
 
 const [w0, w1] = report.windowEt;
 const orbiters = report.ephem.filter((s) => s.kind === 4);
@@ -45,7 +46,8 @@ function segmentOf(bytes, target) {
   throw new Error(`no segment for ${target}`);
 }
 
-test('the blob holds three kind 4 segments of 104-byte records', () => {
+test('the blob holds three kind 4 segments of 160-byte records', () => {
+  assert.equal(RECORD_BYTES, 160);
   assert.equal(orbiters.length, 3);
   for (const s of orbiters) {
     assert.equal(s.bytes, s.recordCount * RECORD_BYTES);
@@ -91,6 +93,51 @@ test('the ground mirror of the evaluation agrees with the flight library', async
     }
   }
   console.log(`  900 states; the mirror and the library differ by at most ${worst.toExponential(1)} km`);
+});
+
+test('the Kepler solve as compiled converges in at most three steps up to the eccentricity limit', { skip: !existsSync(scan) && 'build/kepler-scan not built' }, () => {
+  // 181 eccentricities from 0 to 0.9, 8,000 mean anomalies each (half of them packed near periapsis)
+  const r = JSON.parse(execFileSync(scan, ['180', '4000'], { encoding: 'utf8' }));
+  assert.equal(r.topEccentricity, E_MAX);
+  assert.equal(r.failures, 0);
+  assert.ok(r.mostSteps <= 3, `${r.mostSteps} steps`);
+  assert.ok(r.mostSteps < r.cap);
+  assert.ok(r.worstError < 2e-15, `sine or cosine off by ${r.worstError}`);
+  console.log(`  ${r.cases.toLocaleString('en-US')} solves: at most ${r.mostSteps} steps (cap ${r.cap}); sine and cosine within ${r.worstError.toExponential(1)} of a long double solve`);
+});
+
+test('the WebAssembly build answers at every eccentricity up to the limit and agrees with the mirror', async () => {
+  const s = orbiters.find((o) => o.target === -9001);
+  const copy = blob.slice();
+  const api = await load(copy, { skipCrc: true });
+  const seg = segmentOf(copy, s.target);
+  const base = (api.exports.__heap_base.value + 7) & ~7;
+  const guest = () => new DataView(api.exports.memory.buffer, base, copy.length);
+  let most = 0, worst = 0, n = 0;
+  for (let ie = 0; ie <= 90; ie++) {
+    const e = (E_MAX * ie) / 90, w = 0.7 * ie;
+    const v = guest();
+    v.setFloat64(seg.data + 8, e * Math.cos(w), true);
+    v.setFloat64(seg.data + 16, e * Math.sin(w), true);
+    v.setFloat32(seg.data + 60, 0, true);
+    v.setFloat32(seg.data + 64, 0, true);
+    const rec = unpackRecord(guest(), seg.data);
+    for (let i = 0; i < 300; i++) {
+      // about two revolutions of the record, in steps that do not repeat the phase
+      const et = s.tStart + 0.5 * s.interval + (i - 150) * 37.7;
+      const tau = et - (s.tStart + 0.5 * s.interval);
+      const got = api.state(-9001, 399, et, 0);
+      assert.equal(got.status, 0, `e = ${e}, tau = ${tau}`);
+      const want = orbitEval(rec, tau);
+      const d = Math.hypot(got.state[0] - want[0], got.state[1] - want[1], got.state[2] - want[2]);
+      assert.ok(d < 1e-7, `e = ${e}: mirror differs by ${d} km`);
+      worst = Math.max(worst, d); n++;
+      const lam = rec[5] + (rec[6] + rec[12] * tau) * tau;
+      most = Math.max(most, keplerOffset(rec[1] * Math.sin(lam) - rec[2] * Math.cos(lam), rec[1] * Math.cos(lam) + rec[2] * Math.sin(lam)).steps);
+    }
+  }
+  assert.ok(most <= 3, `${most} Kepler steps in the mirror`);
+  console.log(`  ${n.toLocaleString('en-US')} states at eccentricities 0 to ${E_MAX}: all answered; at most ${most} Kepler steps; the mirror and the library differ by at most ${worst.toExponential(1)} km`);
 });
 
 test('kind 4 states match CSPICE on the synthetic kernels within the declared bounds', { skip }, async () => {
@@ -169,7 +216,9 @@ test('a record that is not an ellipse the model accepts answers unsupported', as
     ['an angle beyond the trigonometry limit', (v, d) => v.setFloat64(d + 40, 3e6, true)],
     ['not-a-number node', (v, d) => v.setFloat64(d + 32, NaN, true)],
     ['an eccentricity rate that leaves the ellipse', (v, d) => v.setFloat32(d + 60, 1e-4, true)],
-    ['an infinite harmonic', (v, d) => v.setFloat32(d + 80, Infinity, true)],
+    ['an infinite harmonic', (v, d) => v.setFloat32(d + 84, Infinity, true)],
+    ['a not-a-number constant across the track', (v, d) => v.setFloat32(d + 156, NaN, true)],
+    ['an infinite quadratic term of the eccentricity vector', (v, d) => v.setFloat32(d + 80, Infinity, true)],
   ];
   for (const [label, edit] of cases) {
     const api = await damaged(edit);

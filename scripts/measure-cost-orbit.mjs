@@ -7,7 +7,8 @@
 //
 // Needs cargo (to build bench/spacewasm-host) and the WebAssembly toolchain. A
 // kind 4 segment is held to the one-segment ceiling of SPEC.md (2,500
-// instructions), and a path through two segments to the three-segment ceiling.
+// instructions) at every eccentricity the model accepts, and a path through
+// two segments to the three-segment ceiling.
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -50,7 +51,8 @@ for (const p of paths) queries.push(p[0]);
 
 // The worst case the model accepts: the low Earth orbiter's first record with its
 // eccentricity overwritten by 0.9 (and the checksum skipped), swept over a day of
-// orbits. The answers mean nothing; the count is what the Kepler loop can cost.
+// orbits, with the periapsis in four directions. The answers mean nothing; the
+// count is what the Kepler solve can cost.
 const blob = readFileSync(blobPath);
 const view = new DataView(blob.buffer, blob.byteOffset, blob.length);
 let recordAt = -1;
@@ -63,16 +65,19 @@ for (let i = 0; i < view.getUint16(20, true); i++) {
   }
 }
 if (recordAt < 0) throw new Error('the orbiter blob has no kind 4 segment for -9001');
-const worstBlob = Buffer.from(blob);
-const wv = new DataView(worstBlob.buffer, worstBlob.byteOffset, worstBlob.length);
-wv.setFloat64(recordAt + 8, 0.9 * Math.cos(1), true);
-wv.setFloat64(recordAt + 16, 0.9 * Math.sin(1), true);
-wv.setFloat32(recordAt + 60, 0, true);
-wv.setFloat32(recordAt + 64, 0, true);
 const worstPath = resolve(root, 'build/cost-orbit.worst.slb');
-writeFileSync(worstPath, worstBlob);
+const worstDirections = [1, 2.5, 4.1, 5.6];
+const writeWorst = (w) => {
+  const worstBlob = Buffer.from(blob);
+  const wv = new DataView(worstBlob.buffer, worstBlob.byteOffset, worstBlob.length);
+  wv.setFloat64(recordAt + 8, 0.9 * Math.cos(w), true);
+  wv.setFloat64(recordAt + 16, 0.9 * Math.sin(w), true);
+  wv.setFloat32(recordAt + 60, 0, true);
+  wv.setFloat32(recordAt + 64, 0, true);
+  writeFileSync(worstPath, worstBlob);
+};
 const worstQueries = ['init 1'];
-for (let i = 0; i < 2000; i++) worstQueries.push(`state -9001 399 ${toHex(w0 + (86400 * (i + 0.5)) / 2000)} 0`);
+for (let i = 0; i < 1000; i++) worstQueries.push(`state -9001 399 ${toHex(w0 + (86400 * (i + 0.5)) / 1000)} 0`);
 
 const { exports: x } = await WebAssembly.instantiate(await WebAssembly.compile(readFileSync(wasm)), {});
 const base = (x.__heap_base.value + 7) & ~7;
@@ -96,15 +101,19 @@ paths.forEach(([, label, ceiling], k) => {
 {
   const wq = resolve(root, 'build/cost-orbit.worst.queries');
   writeFileSync(wq, worstQueries.join('\n') + '\n');
-  const out = run(hostBin, ['--module', wasm, '--blob', worstPath, '--base', String(base), '--queries', wq]).trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.query).slice(1);
-  for (const l of out) if (l.status !== 0) failures.push(`worst case: ${l.query}: status ${l.status}`);
-  const counts = out.map((l) => l.instructions);
+  const counts = [];
+  for (const w of worstDirections) {
+    writeWorst(w);
+    const out = run(hostBin, ['--module', wasm, '--blob', worstPath, '--base', String(base), '--queries', wq]).trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.query).slice(1);
+    for (const l of out) if (l.status !== 0) failures.push(`worst case: ${l.query}: status ${l.status}`);
+    counts.push(...out.map((l) => l.instructions));
+  }
   const row = { label: 'lite_state, one kind 4 segment with the eccentricity forced to the limit of 0.9 (cost only)', min: Math.min(...counts), max: Math.max(...counts), mean: Math.round(counts.reduce((s, v) => s + v, 0) / counts.length) };
   rows.push(row);
   if (row.max > 2500) failures.push(`${row.label}: ${row.max} instructions, ceiling 2500`);
 }
 writeFileSync(resolve(root, 'build/cost-orbit.json'), JSON.stringify({ spacewasm: '0.8.0-rc.3', moduleBytes: readFileSync(wasm).length, rows }, null, 2) + '\n');
-console.log(`module ${fmt(readFileSync(wasm).length)} bytes; ${N} times per orbiter`);
+console.log(`module ${fmt(readFileSync(wasm).length)} bytes; ${N} times per orbiter, ${fmt(worstDirections.length * 1000)} at the eccentricity limit`);
 console.log(['| Call | Instructions (least to most) | Mean | Slices of 1,000 |', '| --- | --- | --- | --- |',
   ...rows.map((r) => `| ${r.label} | ${r.min === r.max ? fmt(r.min) : fmt(r.min) + ' to ' + fmt(r.max)} | ${fmt(r.mean)} | ${Math.ceil(r.max / 1000)} |`)].join('\n'));
 if (failures.length) {
