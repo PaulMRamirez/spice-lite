@@ -34,6 +34,7 @@
 #define HEADER_SIZE 64u
 #define DIR_ENTRY 16u
 #define TIME_ENTRY 32u
+#define TIME_MAX 4096u /* most TIME entries a blob may hold; bounds the search */
 #define BODY_ENTRY 32u
 #define EPHEM_ENTRY 48u
 #define ORIENT_ENTRY 64u
@@ -51,9 +52,9 @@
 
 /* EPHEM kind 4, the compact orbit model: record size, the largest squared
  * eccentricity it accepts (0.9 squared), and the cap on Kepler iterations. */
-#define ORBIT_REC 104u
+#define ORBIT_REC 160u
 #define ORBIT_E2_MAX 0.81
-#define ORBIT_KEPLER_MAX 12
+#define ORBIT_KEPLER_MAX 6
 
 typedef struct {
     uint32_t off;
@@ -688,10 +689,23 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
             return 0;
         }
     }
+    /* TIME: finite numbers, and entries in strictly ascending order of time
+     * base, then host_start, which is what lets lite_host2et search. Two
+     * pieces of one base with the same start are refused with the rest. The
+     * count is capped so that the search has a fixed worst case. */
+    if (G.sec[SEC_TIME].count > TIME_MAX) {
+        return 0;
+    }
     for (i = 0; i < G.sec[SEC_TIME].count; i++) {
         const uint8_t *e = b + G.sec[SEC_TIME].off + i * TIME_ENTRY;
         if (!finite64(rdf64(e + 8)) || !finite64(rdf64(e + 16)) || !finite64(rdf64(e + 24))) {
             return 0;
+        }
+        if (i > 0u) {
+            uint32_t base = rd16(e), prev = rd16(e - TIME_ENTRY);
+            if (base < prev || (base == prev && !(rdf64(e + 8) > rdf64(e - TIME_ENTRY + 8)))) {
+                return 0;
+            }
         }
     }
     for (i = 0; i < G.sec[SEC_SITE].count; i++) {
@@ -730,9 +744,9 @@ int lite_init(const void *blob, uint32_t len, uint32_t flags)
 
 int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double *et)
 {
-    uint32_t i, n;
+    uint32_t base;
     double host;
-    const uint8_t *best = 0;
+    const uint8_t *lo, *hi, *tab;
     if (!G.ready) {
         return LITE_BAD_BLOB;
     }
@@ -740,19 +754,33 @@ int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double
         return LITE_BAD_ARG;
     }
     host = (double)seconds + (double)useconds * 1.0e-6;
-    n = G.sec[SEC_TIME].count;
-    for (i = 0; i < n; i++) {
-        const uint8_t *e = G.b + G.sec[SEC_TIME].off + i * TIME_ENTRY;
-        if (rd16(e) == (uint16_t)time_base && rdf64(e + 8) <= host) {
-            if (best == 0 || rdf64(e + 8) >= rdf64(best + 8)) {
-                best = e;
-            }
+    base = (uint16_t)time_base;
+    /* lite_init has checked that the entries ascend by time base, then by
+     * host_start, with no two alike, so the entries that sort at or before
+     * (base, host) are a prefix of the table. The binary search below finds
+     * where that prefix ends, at lo; the entry just before lo is the piece of
+     * this base with the latest host_start not after the reading, if the
+     * prefix is not empty and its last entry has this base. That is the same
+     * piece a scan of every entry selects. A blob is at most 1 MiB, so the
+     * table has fewer than 2^15 entries and the search takes at most 15
+     * probes. The written form (pointers, the base tested for equality
+     * first) is the cheapest of several measured under SpaceWasm. */
+    tab = G.b + G.sec[SEC_TIME].off;
+    lo = tab;
+    hi = tab + G.sec[SEC_TIME].count * TIME_ENTRY;
+    while (lo < hi) {
+        const uint8_t *mid = lo + (((uint32_t)(hi - lo) >> 1) & ~(TIME_ENTRY - 1u));
+        uint32_t b = rd16(mid);
+        if (b == base ? rdf64(mid + 8) <= host : b < base) {
+            lo = mid + TIME_ENTRY;
+        } else {
+            hi = mid;
         }
     }
-    if (best == 0) {
+    if (lo == tab || rd16(lo - TIME_ENTRY) != base) {
         return LITE_OUT_OF_COVERAGE;
     }
-    *et = rdf64(best + 16) + rdf64(best + 24) * (host - rdf64(best + 8));
+    *et = rdf64(lo - 16) + rdf64(lo - 8) * (host - rdf64(lo - 24));
     return LITE_OK;
 }
 
@@ -824,120 +852,179 @@ static int grid_locate(double t, double t0, double dt, uint32_t count, uint32_t 
 /* Kind 4: one record of the compact orbit model at tau seconds from the
  * record's mid epoch. The record holds six elements (semi-major axis, the
  * eccentricity vector in the orbit plane measured from the ascending node,
- * inclination, node, and mean argument of latitude), their rates, and six
- * coefficients of corrections in twice the argument of latitude: the form of
- * the GPS broadcast ephemeris, regular at zero eccentricity. The velocity is
- * the exact time derivative of the position formula, so the record needs no
- * gravitational parameter. Ellipses only: an eccentricity over 0.9, a
- * semi-major axis that is not positive, or an angle too large for the
+ * inclination, node, and mean argument of latitude), their rates, quadratic
+ * terms for the mean argument and the eccentricity vector, and 19
+ * coefficients of displacements in kilometers: radial, along the track, and
+ * across it, each with a cosine and a sine term in one, two, and three times
+ * the argument of latitude, plus a constant across the track. It is the idea
+ * of the GPS broadcast ephemeris (elements, rates, and harmonic corrections),
+ * regular at zero eccentricity and with enough harmonics for an eccentric
+ * orbit. The velocity is the exact time derivative of the position formula,
+ * so the record needs no gravitational parameter. Ellipses only: an
+ * eccentricity over 0.9, a semi-major axis that is not positive, a
+ * coefficient that is not a number, or an angle too large for the
  * trigonometry returns LITE_UNSUPPORTED. Every divisor below is bounded away
  * from zero by those checks, and the Kepler loop is capped. */
 static int sincos_near(double x, double *s, double *c)
 {
-    if (lite_fabs(x) <= 0.78) { /* inside the kernel's range: no reduction */
+    double ax = lite_fabs(x);
+    if (ax <= 0.78) { /* inside the kernel's range: no reduction */
         sincos_kernel(x, s, c);
         return 0;
     }
+    if (ax <= 1.56) { /* half the angle is inside it: double the angle */
+        double hs, hc;
+        sincos_kernel(0.5 * x, &hs, &hc);
+        *s = 2.0 * hs * hc;
+        *c = 1.0 - 2.0 * hs * hs;
+        return 0;
+    }
     return lite_sincos(x, s, c);
+}
+
+/* Kepler's equation for kind 4. With ka = ex sin lam - ey cos lam and
+ * kb = ex cos lam + ey sin lam, the offset G = F - lam of the eccentric
+ * argument of latitude from the mean one is the root of
+ * f(G) = G - ka cos G - kb sin G, and |G| is at most the eccentricity. The
+ * higher derivatives of f come free with it (the second is
+ * ka cos G + kb sin G = G - f, and the third is kb cos G - ka sin G, which is
+ * one minus the first), so each step is the fourth-order one of Danby (1987):
+ * a Newton step, refined by Halley's formula, refined once more with the third
+ * derivative. The first step starts at G = 0, where the sine and cosine are
+ * known, and costs no trigonometry. A step of at most 1e-4 radians is the
+ * last: at fourth order what it leaves is below rounding, and so small a step
+ * turns the sine and cosine by a third-order series without another
+ * evaluation. Writes sin G and cos G and returns the number of steps taken, or
+ * 0 if the cap is reached or an iterate leaves the range of the trigonometry
+ * (which a record within the eccentricity limit does not do: three steps is
+ * the most a scan of the whole accepted range finds; see
+ * docs/orbit-segment.md). */
+static int kepler_offset(double ka, double kb, double *sg, double *cg)
+{
+    double g = 0.0, s = 0.0, c = 1.0;
+    double f2 = ka, f3 = kb; /* the second and third derivatives at G = 0 */
+    int it;
+    for (it = 1; it <= ORBIT_KEPLER_MAX; it++) {
+        double f = g - f2;
+        double f1 = 1.0 - f3;
+        double d = f / f1;
+        d = f / (f1 - 0.5 * d * f2);
+        d = f / (f1 - 0.5 * d * f2 + d * d * f3 * (1.0 / 6.0));
+        g -= d;
+        if (lite_fabs(d) <= 1.0e-4) {
+            double h = 0.5 * d * d;
+            double t = d * (1.0 - h * (1.0 / 3.0));
+            *sg = s * (1.0 - h) - c * t;
+            *cg = c * (1.0 - h) + s * t;
+            return it;
+        }
+        if (sincos_near(g, &s, &c)) {
+            return 0;
+        }
+        f2 = ka * c + kb * s;
+        f3 = kb * c - ka * s;
+    }
+    return 0;
+}
+
+/* Three harmonics of the argument of latitude for one displacement: q holds
+ * the cosine and sine coefficients of u, 2u, and 3u as 32-bit floats, h the
+ * cosines and sines themselves. Returns the sum and writes its derivative with
+ * respect to u. */
+static double orbit_harmonics(const uint8_t *q, const double *h, double *der)
+{
+    double c1 = rdf32(q), s1 = rdf32(q + 4), c2 = rdf32(q + 8);
+    double s2 = rdf32(q + 12), c3 = rdf32(q + 16), s3 = rdf32(q + 20);
+    *der = (s1 * h[0] - c1 * h[1]) + 2.0 * (s2 * h[2] - c2 * h[3]) + 3.0 * (s3 * h[4] - c3 * h[5]);
+    return (c1 * h[0] + s1 * h[1]) + (c2 * h[2] + s2 * h[3]) + (c3 * h[4] + s3 * h[5]);
 }
 
 static int eval_orbit(const uint8_t *p, double tau, double *s)
 {
     double a1 = rdf32(p + 56), ex1 = rdf32(p + 60), ey1 = rdf32(p + 64);
     double inc1 = rdf32(p + 68), node1 = rdf32(p + 72), lam2 = rdf32(p + 76);
-    double cuc = rdf32(p + 80), cus = rdf32(p + 84), crc = rdf32(p + 88);
-    double crs = rdf32(p + 92), cic = rdf32(p + 96), cis = rdf32(p + 100);
     double lam1 = rdf64(p + 48);
+    double eq = rdf32(p + 80) * tau;
     double a = rdf64(p) + a1 * tau;
-    double ex = rdf64(p + 8) + ex1 * tau;
-    double ey = rdf64(p + 16) + ey1 * tau;
+    double ex = rdf64(p + 8) + (ex1 - eq * ey1) * tau;
+    double ey = rdf64(p + 16) + (ey1 + eq * ex1) * tau;
     double inc = rdf64(p + 24) + inc1 * tau;
     double node = rdf64(p + 32) + node1 * tau;
     double lam = rdf64(p + 40) + (lam1 + lam2 * tau) * tau;
     double lam_dot = lam1 + 2.0 * lam2 * tau;
     double e2 = ex * ex + ey * ey;
-    double sl, cl, ka, kb, g = 0.0, sg = 0.0, cg = 1.0, d;
+    double exd, eyd, sl, cl, sg, cg;
     double sf, cf, rho, f_dot, w, beta, beta_dot, dd, dd_dot;
-    double xn, yn, xn_dot, yn_dot, r, r_dot, cu, su, u_dot, c2, s2, two_u;
-    double du, dr, di, uc_dot, rc_dot, ic_dot, sd, cd, cuc2, suc2, rc;
-    double xp, yp, xp_dot, yp_dot, si, ci, so, co, x, y;
-    int it, done = 0;
+    double xn, yn, xn_dot, yn_dot, r, r_dot, u_dot, h[6];
+    double dr, dt, dw, dr_u, dt_u, dw_u, rc, rc_dot, dt_dot, dw_dot;
+    double xp, yp, xp_dot, yp_dot, si, ci, so, co, q, z, q_dot, x, y;
     if (!(a > 0.0) || !finite64(a) || !(e2 <= ORBIT_E2_MAX)) {
         return LITE_UNSUPPORTED;
     }
+    /* the rates of the eccentricity vector at tau: its velocity has turned */
+    exd = ex1 - 2.0 * eq * ey1;
+    eyd = ey1 + 2.0 * eq * ex1;
     if (lite_sincos(lam, &sl, &cl)) {
         return LITE_UNSUPPORTED;
     }
-    /* Kepler's equation, F - ex sin F + ey cos F = lam, solved by Newton steps
-     * for the offset G = F - lam, which satisfies G = ka cos G + kb sin G. A
-     * step under 1e-8 is the last: the iteration converges quadratically, so
-     * the error left is below rounding, and so small a step turns the sine and
-     * cosine to first order without another evaluation. */
-    ka = ex * sl - ey * cl;
-    kb = ex * cl + ey * sl;
-    for (it = 0; it < ORBIT_KEPLER_MAX && !done; it++) {
-        d = (g - (ka * cg + kb * sg)) / (1.0 + (ka * sg - kb * cg));
-        g -= d;
-        if (lite_fabs(d) <= 1.0e-8) {
-            double sg0 = sg;
-            sg = sg - cg * d;
-            cg = cg + sg0 * d;
-            done = 1;
-        } else if (sincos_near(g, &sg, &cg)) {
-            return LITE_UNSUPPORTED;
-        }
-    }
-    if (!done) {
+    /* Kepler's equation, F - ex sin F + ey cos F = lam, for the offset F - lam */
+    if (!kepler_offset(ex * sl - ey * cl, ex * cl + ey * sl, &sg, &cg)) {
         return LITE_UNSUPPORTED;
     }
     sf = sl * cg + cl * sg;
     cf = cl * cg - sl * sg;
     rho = 1.0 - (ex * cf + ey * sf);
-    f_dot = (lam_dot + (ex1 * sf - ey1 * cf)) / rho;
+    f_dot = (lam_dot + (exd * sf - eyd * cf)) / rho;
     /* position in the orbit plane, in units of a, x toward the node */
     w = lite_sqrt(1.0 - e2);
     beta = 1.0 / (1.0 + w);
-    beta_dot = ((ex * ex1 + ey * ey1) * beta * beta) / w;
+    beta_dot = ((ex * exd + ey * eyd) * beta * beta) / w;
     dd = ey * cf - ex * sf;
-    dd_dot = (ey1 * cf - ex1 * sf) - (ey * sf + ex * cf) * f_dot;
+    dd_dot = (eyd * cf - exd * sf) - (ey * sf + ex * cf) * f_dot;
     xn = (cf - ex) - beta * ey * dd;
     yn = (sf - ey) + beta * ex * dd;
-    xn_dot = (-sf * f_dot - ex1) - ((beta_dot * ey + beta * ey1) * dd + beta * ey * dd_dot);
-    yn_dot = (cf * f_dot - ey1) + ((beta_dot * ex + beta * ex1) * dd + beta * ex * dd_dot);
+    xn_dot = (-sf * f_dot - exd) - ((beta_dot * ey + beta * eyd) * dd + beta * ey * dd_dot);
+    yn_dot = (cf * f_dot - eyd) + ((beta_dot * ex + beta * exd) * dd + beta * ex * dd_dot);
     r = a * rho;
-    r_dot = a1 * rho - a * ((ex1 * cf + ey1 * sf) + dd * f_dot);
-    /* argument of latitude u, and the corrections in 2u */
-    cu = xn / rho;
-    su = yn / rho;
+    r_dot = a1 * rho - a * ((exd * cf + eyd * sf) + dd * f_dot);
+    /* argument of latitude u: its cosine and sine, and those of 2u and 3u */
+    h[0] = xn / rho;
+    h[1] = yn / rho;
     u_dot = (xn * yn_dot - yn * xn_dot) / (rho * rho);
-    c2 = cu * cu - su * su;
-    s2 = 2.0 * cu * su;
-    du = cuc * c2 + cus * s2;
-    dr = crc * c2 + crs * s2;
-    di = cic * c2 + cis * s2;
-    two_u = 2.0 * u_dot;
-    uc_dot = u_dot + two_u * (cus * c2 - cuc * s2);
-    rc_dot = r_dot + two_u * (crs * c2 - crc * s2);
-    ic_dot = inc1 + two_u * (cis * c2 - cic * s2);
-    if (sincos_near(du, &sd, &cd) || lite_sincos(inc + di, &si, &ci) ||
-        lite_sincos(node, &so, &co)) {
+    h[2] = h[0] * h[0] - h[1] * h[1];
+    h[3] = 2.0 * h[0] * h[1];
+    h[4] = h[2] * h[0] - h[3] * h[1];
+    h[5] = h[3] * h[0] + h[2] * h[1];
+    /* displacements in kilometers: radial, along the track, and across it */
+    dr = orbit_harmonics(p + 84, h, &dr_u);
+    dt = orbit_harmonics(p + 108, h, &dt_u);
+    dw = orbit_harmonics(p + 132, h, &dw_u) + rdf32(p + 156);
+    if (!finite64(dr + dt + dw)) { /* a coefficient that is not a number */
         return LITE_UNSUPPORTED;
     }
-    cuc2 = cu * cd - su * sd;
-    suc2 = su * cd + cu * sd;
+    if (lite_sincos(inc, &si, &ci) || lite_sincos(node, &so, &co)) {
+        return LITE_UNSUPPORTED;
+    }
     rc = r + dr;
-    xp = rc * cuc2;
-    yp = rc * suc2;
-    xp_dot = rc_dot * cuc2 - yp * uc_dot;
-    yp_dot = rc_dot * suc2 + xp * uc_dot;
-    x = xp * co - yp * ci * so;
-    y = xp * so + yp * ci * co;
+    rc_dot = r_dot + dr_u * u_dot;
+    dt_dot = dt_u * u_dot;
+    dw_dot = dw_u * u_dot;
+    xp = rc * h[0] - dt * h[1];
+    yp = rc * h[1] + dt * h[0];
+    xp_dot = (rc_dot * h[0] - dt_dot * h[1]) - yp * u_dot;
+    yp_dot = (rc_dot * h[1] + dt_dot * h[0]) + xp * u_dot;
+    /* tilt by the inclination about the node line, then turn by the node */
+    q = yp * ci - dw * si;
+    z = yp * si + dw * ci;
+    q_dot = (yp_dot * ci - dw_dot * si) - z * inc1;
+    x = xp * co - q * so;
+    y = xp * so + q * co;
     s[0] = x;
     s[1] = y;
-    s[2] = yp * si;
-    s[3] = (xp_dot * co - yp_dot * ci * so) + yp * si * so * ic_dot - y * node1;
-    s[4] = (xp_dot * so + yp_dot * ci * co) - yp * si * co * ic_dot + x * node1;
-    s[5] = yp_dot * si + yp * ci * ic_dot;
+    s[2] = z;
+    s[3] = (xp_dot * co - q_dot * so) - y * node1;
+    s[4] = (xp_dot * so + q_dot * co) + x * node1;
+    s[5] = (yp_dot * si + dw_dot * ci) + q * inc1;
     return LITE_OK;
 }
 
@@ -1608,41 +1695,248 @@ int lite_sub_point(int32_t body, int32_t observer, double et, double *lon, doubl
     return LITE_OK;
 }
 
-int lite_occulted(int32_t target, int32_t by, int32_t observer, double et, int32_t *code)
+/* ---- occultation -------------------------------------------------------- */
+
+#define OCC_MEMO 8
+#define OCC_GOLDEN_MAX 30
+
+/* Two hints for clang, which builds the flight module. LITE_SMALL compiles for
+ * size two parts that do little arithmetic (measured: it must stay off
+ * anything that evaluates a segment or loops over vectors, which it slows by
+ * hundreds of instructions for no saving). LITE_MAP keeps the two small frame
+ * maps as calls, where inlining their dozen uses would add about half a
+ * kilobyte. Neither changes a result. */
+#if defined(__clang__)
+#define LITE_SMALL __attribute__((minsize))
+#define LITE_MAP __attribute__((noinline))
+#else
+#define LITE_SMALL
+#define LITE_MAP
+#endif
+
+/* The positions of the links already evaluated in one occultation query, so
+ * that a link shared by two paths (the observer's, most often) costs once. */
+typedef struct {
+    int n;
+    int idx[OCC_MEMO];
+    double p[OCC_MEMO][3];
+} link_memo;
+
+static int link_pos(link_memo *m, int idx, double et, double *p)
 {
-    double rt[3], rf[3], b[6], f[6], c[3];
-    double rb, rfm, pb, pf, ab, af, sep;
-    int ti, fi, oi, st;
-    if (!G.ready) {
-        return LITE_BAD_BLOB;
+    double s[6];
+    const double *from = s;
+    int i, k, st, src = LITE_SRC_PUBLISHED;
+    for (i = 0; i < m->n && m->idx[i] != idx; i++) {
     }
-    if (code == 0 || !finite64(et)) {
-        return LITE_BAD_ARG;
+    if (i < m->n) {
+        from = m->p[i];
+    } else {
+        st = link_state(idx, et, 1, s, &src);
+        if (st != LITE_OK) {
+            return st;
+        }
+        if (i < OCC_MEMO) {
+            m->idx[i] = idx;
+            m->n = i + 1;
+            for (k = 0; k < 3; k++) {
+                m->p[i][k] = s[k];
+            }
+        }
     }
-    ti = body_index(target);
-    fi = body_index(by);
-    oi = body_index(observer);
-    if (ti < 0 || fi < 0 || oi < 0) {
+    for (k = 0; k < 3; k++) {
+        p[k] = from[k];
+    }
+    return LITE_OK;
+}
+
+/* The bodies from start up to the root, as state_rel walks them. */
+static int chain_of(int start, double et, int *p)
+{
+    int n = 0, cur;
+    for (cur = start; cur >= 0 && n < MAX_DEPTH + 3; cur = next_of(cur, et, 1)) {
+        p[n++] = cur;
+    }
+    return n;
+}
+
+/* Geometric position of body a relative to body b at et, with a fresh supplied
+ * state in use. The walk and the order of the sums are those of state_rel, so
+ * the result has the same bits, but a link is evaluated once per memo. */
+static int pos_rel(link_memo *m, int a, int b, double et, double *out)
+{
+    int pa[MAX_DEPTH + 3], pb[MAX_DEPTH + 3];
+    int na = chain_of(a, et, pa), nb = chain_of(b, et, pb);
+    int i, j, la = -1, lb = 0, k;
+    double s[3];
+    for (i = 0; i < na && la < 0; i++) {
+        for (j = 0; j < nb; j++) {
+            if (pa[i] == pb[j]) {
+                la = i;
+                lb = j;
+                break;
+            }
+        }
+    }
+    if (la < 0) {
         return LITE_NO_PATH;
     }
-    if (ti == fi) {
-        return LITE_BAD_ARG;
+    out[0] = out[1] = out[2] = 0.0;
+    for (i = 0; i < la + lb; i++) {
+        int st = link_pos(m, i < la ? pa[i] : pb[i - la], et, s);
+        if (st != LITE_OK) {
+            return st;
+        }
+        for (k = 0; k < 3; k++) {
+            out[k] = i < la ? out[k] + s[k] : out[k] - s[k];
+        }
     }
-    if (!body_radii(ti, rt) || !body_radii(fi, rf)) {
-        return LITE_UNSUPPORTED;
+    return LITE_OK;
+}
+
+static double dot3(const double *a, const double *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+static void cross3(const double *a, const double *b, double *c)
+{
+    c[0] = a[1] * b[2] - a[2] * b[1];
+    c[1] = a[2] * b[0] - a[0] * b[2];
+    c[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+/* An ellipsoid with semi-axes r and rotation rot (J2000 to body-fixed,
+ * row-major; null for a sphere, which needs no frame) becomes the unit sphere
+ * under M = diag(1/r) rot. to_unit gives y = M x and from_unit gives
+ * x = inverse(M) y. x and y may not overlap. */
+LITE_MAP static void to_unit(const double *r, const double *rot, const double *x, double *y)
+{
+    int k;
+    for (k = 0; k < 3; k++) {
+        y[k] = (rot == 0 ? x[k] : rot[3 * k] * x[0] + rot[3 * k + 1] * x[1] + rot[3 * k + 2] * x[2]) / r[k];
     }
-    st = state_rel(ti, oi, et, 1, b, 0);
-    if (st != LITE_OK) {
-        return st;
+}
+
+LITE_MAP static void from_unit(const double *r, const double *rot, const double *y, double *x)
+{
+    double t[3];
+    int k;
+    for (k = 0; k < 3; k++) {
+        t[k] = r[k] * y[k];
     }
-    st = state_rel(fi, oi, et, 1, f, 0);
-    if (st != LITE_OK) {
-        return st;
+    for (k = 0; k < 3; k++) {
+        x[k] = rot == 0 ? t[k] : rot[k] * t[0] + rot[3 + k] * t[1] + rot[6 + k] * t[2];
     }
-    /* Each body is a sphere of its mean radius. pb and pf are the squared
-     * lengths of the tangents from the observer to the two spheres. */
-    rb = (rt[0] + rt[1] + rt[2]) / 3.0;
-    rfm = (rf[0] + rf[1] + rf[2]) / 3.0;
+}
+
+/* Sign of the quadratic form with symmetric matrix k (k00 k01 k02 k11 k12 k22)
+ * on the cone v0^2 = v1^2 + v2^2: 1 when it is positive on every such v but
+ * zero, -1 when negative on every one, 0 when it takes both signs (or touches
+ * zero within rounding).
+ *
+ * By Finsler's lemma the form is positive on the cone exactly when
+ * K - lambda J is positive definite for some lambda, with J = diag(-1, 1, 1).
+ * The lambdas that do so fill an interval between two roots of the cubic
+ * det(K - lambda J), and a cubic has a stationary point between any two of
+ * its roots, so it is enough to try its two stationary points, which a
+ * quadratic gives. No iteration, and no decision rests on the cubic's roots. */
+static int cone_sign(const double *k)
+{
+    double a = k[0] - k[3] - k[5];
+    double bq = (k[3] * k[5] - k[4] * k[4]) - k[0] * (k[3] + k[5]) + k[1] * k[1] + k[2] * k[2];
+    double disc = a * a - 3.0 * bq;
+    double q, lam[2];
+    int i;
+    if (!(disc >= 0.0)) {
+        return 0;
+    }
+    q = a >= 0.0 ? -(a + lite_sqrt(disc)) : lite_sqrt(disc) - a;
+    lam[0] = q / 3.0;
+    lam[1] = q != 0.0 ? bq / q : 0.0;
+    for (i = 0; i < 2; i++) {
+        double m00 = k[0] + lam[i], m11 = k[3] - lam[i], m22 = k[5] - lam[i];
+        double d2 = m00 * m11 - k[1] * k[1];
+        double d3 = m00 * (m11 * m22 - k[4] * k[4]) - k[1] * (k[1] * m22 - k[4] * k[2]) +
+                    k[2] * (k[1] * k[4] - m11 * k[2]);
+        if (m00 > 0.0 && d2 > 0.0 && d3 > 0.0) {
+            return 1;
+        }
+        if (m00 < 0.0 && d2 > 0.0 && d3 < 0.0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Whether the cone of directions l0 + p l1 + q l2 with p^2 + q^2 <= 1 shares a
+ * direction with the cone of directions d with d.a > tau |d|.
+ *
+ * psi(d) = d.a - tau |d| is concave and positive exactly inside the second
+ * cone, so the question is whether its maximum over the unit disk of (p, q)
+ * is positive. Along a chord of fixed p the maximum over q has a closed form
+ * (a linear term less the root of a quadratic), and that maximum is a concave
+ * function of p, so it has one peak and a golden section search over p from
+ * -1 to 1 finds it. The search stops at the first positive value. */
+static int cones_meet(const double *l, const double *a, double tau)
+{
+    static const double GOLD = 0.38196601125010515;
+    const double *l2 = l + 6;
+    double a1 = dot3(l2, a), q2 = dot3(l2, l2);
+    double lo = -1.0, mid = 0.0, hi = 1.0, gm = 0.0, s = 0.0;
+    int i, k;
+    for (i = 0; i <= OCC_GOLDEN_MAX; i++) {
+        /* p = 2s / (1 + s^2) runs from -1 to 1 with s and flattens at the
+         * ends, where the chord shrinks to a point; everything is scaled by
+         * 1 + s^2 until the last line. */
+        double d[3], q1, den, y, g, disc;
+        double scale = 1.0 + s * s, half = 1.0 - s * s;
+        for (k = 0; k < 3; k++) {
+            d[k] = scale * l[k] + 2.0 * s * l[3 + k];
+        }
+        /* along the chord d + y l2: where the derivative of psi vanishes,
+         * held to the chord's ends */
+        q1 = dot3(d, l2);
+        den = tau * tau * q2 - a1 * a1;
+        disc = dot3(d, d) * q2 - q1 * q1;
+        y = a1 >= 0.0 ? half : -half;
+        if (den > 0.0 && disc > 0.0) {
+            double z = lite_sqrt(a1 * a1 * disc / den);
+            z = ((a1 >= 0.0 ? z : -z) - q1) / q2;
+            y = z > half ? half : z < -half ? -half : z;
+        } else if (den > 0.0) {
+            y = -q1 / q2 > half ? half : -q1 / q2 < -half ? -half : -q1 / q2;
+        }
+        for (k = 0; k < 3; k++) {
+            d[k] += y * l2[k];
+        }
+        g = (dot3(d, a) - tau * norm3(d)) / scale;
+        if (g > 0.0) {
+            return 1;
+        }
+        if (i == 0 || g > gm) {
+            if (s > mid) {
+                lo = mid;
+            } else if (s < mid) {
+                hi = mid;
+            }
+            mid = s;
+            gm = g;
+        } else if (s > mid) {
+            hi = s;
+        } else {
+            lo = s;
+        }
+        s = hi - mid > mid - lo ? mid + GOLD * (hi - mid) : mid - GOLD * (mid - lo);
+    }
+    return 0;
+}
+
+/* Occultation of two spheres: the target of radius rb at b, the front body of
+ * radius rf at f, both relative to the observer. */
+LITE_SMALL static int occ_spheres(const double *b, double rb, const double *f, double rfm, int32_t *code)
+{
+    double c[3];
+    double pb, pf, ab, af, sep;
+    /* pb and pf are the squared lengths of the tangents from the observer to
+     * the two spheres. */
     pb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]) - rb * rb;
     pf = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]) - rfm * rfm;
     if (!finite64(pb) || !finite64(pf)) {
@@ -1677,4 +1971,216 @@ int lite_occulted(int32_t target, int32_t by, int32_t observer, double et, int32
         *code = LITE_OCC_PARTIAL;
     }
     return LITE_OK;
+}
+
+/* Occultation of two ellipsoids: the target with semi-axes rt and rotation
+ * rott at b, the front body with rf and rotf at f, both relative to the
+ * observer in J2000. A null rotation means a sphere (equal semi-axes).
+ *
+ * Seen from the observer each body fills a cone, and lines through the
+ * observer stay lines under any linear map, so the question can be moved to
+ * the space where the front body is the unit sphere (to draw its limb, a
+ * circle of tangent directions l0 + l1 cos(phi) + l2 sin(phi)) and then to the
+ * space where the target is the unit sphere (to ask of each limb direction y
+ * whether it points into the target's cone, which is y.y - |bt x y|^2 > 0 on
+ * the side y.bt > 0). Along the limb that test is a quadratic form in
+ * (1, cos(phi), sin(phi)); cone_sign says whether it keeps one sign. */
+static int occ_ellipsoids(const double *b, const double *rt, const double *rott, const double *f,
+                                     const double *rf, const double *rotf, int32_t *code)
+{
+    double c[3], bt[3], t[3], l[9], x[9], e[9], k[6], h[3], w[3], tmp[3];
+    double n2, m2, tf2, tc, tt, len, sum = 0.0;
+    int i, j, n, sign, inside;
+    to_unit(rf, rotf, f, c);
+    to_unit(rt, rott, b, bt);
+    to_unit(rf, rotf, b, t);
+    n2 = dot3(c, c);
+    m2 = dot3(bt, bt);
+    tc = dot3(t, c);
+    tt = dot3(t, t);
+    if (!finite64(n2) || !finite64(m2) || !finite64(tc) || !finite64(tt)) {
+        return LITE_UNSUPPORTED;
+    }
+    if (!(n2 > 1.0) || !(m2 > 1.0)) {
+        return LITE_BAD_ARG; /* the observer is on or inside one of the bodies */
+    }
+    tf2 = n2 - 1.0; /* squared tangent length to the front body, in its unit-sphere space */
+    *code = LITE_OCC_NONE;
+    /* Which body is nearer: the one with the shorter tangent from the
+     * observer, as for two spheres. Both lengths are taken in the front
+     * body's unit-sphere space, the target's along the line to its center
+     * (tt is that line's squared length there, and 1 - 1/m2 the share of it
+     * that reaches the target's limb). For two spheres this is the test in
+     * occ_spheres exactly. */
+    if (!(tf2 < tt * (1.0 - 1.0 / m2))) {
+        return LITE_OK;
+    }
+    /* e: the vector toward the front body's center, scaled to the tangent
+     * length, and two unit vectors across it; e0 + e1 cos(phi) + e2 sin(phi)
+     * are the directions of the limb. */
+    n = lite_fabs(c[0]) <= lite_fabs(c[1]) ? 0 : 1;
+    n = lite_fabs(c[n]) <= lite_fabs(c[2]) ? n : 2;
+    for (i = 0; i < 3; i++) {
+        tmp[i] = i == n ? 1.0 : 0.0;
+    }
+    cross3(c, tmp, e + 3);
+    cross3(c, e + 3, e + 6);
+    len = lite_sqrt(tf2 / n2);
+    for (i = 0; i < 3; i++) {
+        e[i] = c[i] * len;
+    }
+    for (j = 3; j < 9; j += 3) {
+        len = norm3(e + j);
+        for (i = 0; i < 3; i++) {
+            e[j + i] /= len;
+        }
+    }
+    /* l: the limb's three vectors carried to the target's unit-sphere space;
+     * x: their cross products with bt; h: their components along bt. */
+    for (i = 0; i < 9; i += 3) {
+        from_unit(rf, rotf, e + i, tmp);
+        to_unit(rt, rott, tmp, l + i);
+        cross3(bt, l + i, x + i);
+        h[i / 3] = dot3(l + i, bt);
+    }
+    for (i = 0, n = 0; i < 9; i += 3) {
+        for (j = i; j < 9; j += 3) {
+            k[n] = dot3(l + i, l + j) - dot3(x + i, x + j);
+            sum += k[n++];
+        }
+    }
+    if (!finite64(sum)) {
+        return LITE_UNSUPPORTED;
+    }
+    sign = cone_sign(k);
+    if (sign > 0) {
+        /* every limb direction is inside the target's double cone: the front
+         * body's disk lies within the target's when they are on the same side */
+        if (h[0] > 0.0) {
+            *code = LITE_OCC_ANNULAR;
+        }
+        return LITE_OK;
+    }
+    /* whether the target's center is inside the front body's cone */
+    inside = tc > 0.0 && tc * tc > tf2 * tt;
+    if (sign < 0) {
+        /* no limb direction is inside the target's cone: the target's disk is
+         * wholly behind the front body or wholly clear of it */
+        if (inside) {
+            *code = LITE_OCC_FULL;
+        }
+        return LITE_OK;
+    }
+    /* The two double cones cross. That is a partial occultation unless the
+     * crossing is between the front body's limb and the mirror image of the
+     * target's cone behind the observer, which takes an observer close enough
+     * to the front body that it fills nearly half the sky. Three cheap ways
+     * to settle it, then the search. */
+    *code = LITE_OCC_PARTIAL;
+    if (inside) {
+        return LITE_OK;
+    }
+    len = h[1] * h[1] + h[2] * h[2];
+    if (h[0] * h[0] > len) {
+        /* the whole limb is on one side of the plane through the observer
+         * that bounds the target's half of the sky */
+        if (h[0] < 0.0) {
+            *code = LITE_OCC_NONE;
+        }
+        return LITE_OK;
+    }
+    /* w: the plane through the observer that bounds the front body's half of
+     * the sky, as a covector in the target's unit-sphere space. Covectors go
+     * the other way with the radii inverted: w = inverse(transpose(Mt))
+     * transpose(Mf) c. */
+    for (i = 0; i < 3; i++) {
+        e[i] = 1.0 / rf[i];
+        e[3 + i] = 1.0 / rt[i];
+    }
+    from_unit(e, rotf, c, tmp);
+    to_unit(e + 3, rott, tmp, w);
+    len = dot3(bt, w);
+    if (len * len > dot3(w, w)) {
+        /* the target's whole limb is on one side of that plane */
+        if (len < 0.0) {
+            *code = LITE_OCC_NONE;
+        }
+        return LITE_OK;
+    }
+    if (!cones_meet(l, bt, lite_sqrt(m2 - 1.0))) {
+        *code = LITE_OCC_NONE;
+    }
+    return LITE_OK;
+}
+
+LITE_SMALL int lite_occulted(int32_t target, int32_t by, int32_t observer, double et, int32_t *code)
+{
+    double rt[3], rf[3], b[3], f[3], rott[9], rotf[9];
+    const double *pt = 0, *pf = 0;
+    link_memo memo;
+    int ti, fi, oi, st;
+    if (!G.ready) {
+        return LITE_BAD_BLOB;
+    }
+    if (code == 0 || !finite64(et)) {
+        return LITE_BAD_ARG;
+    }
+    ti = body_index(target);
+    fi = body_index(by);
+    oi = body_index(observer);
+    if (ti < 0 || fi < 0 || oi < 0) {
+        return LITE_NO_PATH;
+    }
+    if (ti == fi) {
+        return LITE_BAD_ARG;
+    }
+    if (!body_radii(ti, rt) || !body_radii(fi, rf)) {
+        return LITE_UNSUPPORTED;
+    }
+    memo.n = 0;
+    st = pos_rel(&memo, ti, oi, et, b);
+    if (st != LITE_OK) {
+        return st;
+    }
+    st = pos_rel(&memo, fi, oi, et, f);
+    if (st != LITE_OK) {
+        return st;
+    }
+    if (!(rt[0] == rt[1] && rt[1] == rt[2] && rf[0] == rf[1] && rf[1] == rf[2])) {
+        /* At least one body is not round. First the cheap way out: when the
+         * spheres of the largest radii are apart in the sky, so are the
+         * bodies, and no orientation is needed to say so. With a and c the
+         * angular radii of those spheres and s the angle between the centers,
+         * s >= a + c reads f.b <= |f||b| cos(a + c), and the right side is the
+         * product of the two tangent lengths less the product of the radii. */
+        double rtx = rt[0] > rt[1] ? rt[0] : rt[1];
+        double rfx = rf[0] > rf[1] ? rf[0] : rf[1];
+        double qb, qf;
+        rtx = rtx > rt[2] ? rtx : rt[2];
+        rfx = rfx > rf[2] ? rfx : rf[2];
+        qb = dot3(b, b) - rtx * rtx;
+        qf = dot3(f, f) - rfx * rfx;
+        if (qb > 0.0 && qf > 0.0 && dot3(f, b) <= lite_sqrt(qb) * lite_sqrt(qf) - rtx * rfx) {
+            *code = LITE_OCC_NONE;
+            return LITE_OK;
+        }
+        if (!(rt[0] == rt[1] && rt[1] == rt[2]) && lite_orient(target, et, rott) == LITE_OK) {
+            pt = rott;
+        }
+        if (!(rf[0] == rf[1] && rf[1] == rf[2]) && lite_orient(by, et, rotf) == LITE_OK) {
+            pf = rotf;
+        }
+    }
+    /* A body that is round, or that has no orientation at et, is a sphere of
+     * the mean of its radii. */
+    if (pt == 0) {
+        rt[0] = rt[1] = rt[2] = (rt[0] + rt[1] + rt[2]) / 3.0;
+    }
+    if (pf == 0) {
+        rf[0] = rf[1] = rf[2] = (rf[0] + rf[1] + rf[2]) / 3.0;
+    }
+    if (pt == 0 && pf == 0) {
+        return occ_spheres(b, rt[0], f, rf[0], code);
+    }
+    return occ_ellipsoids(b, rt, pt, f, rf, pf, code);
 }

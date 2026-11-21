@@ -1,0 +1,17 @@
+{
+  "name": "sclk-many",
+  "comment": "A TIME section with many pieces, for the search in lite_host2et. The clock is SYNTHETIC (test/fixtures/synthetic-tt-steady.tsc: one rate, running on TT); held to a tenth of a microsecond over 240 days it needs about two hundred pieces. The explicit entries put other time bases below and above the clock's, and are listed out of order on purpose: the slicer writes TIME sorted by base, then start. The Sun is here only because a blob needs an ephemeris segment.",
+  "kernels": ["naif0012.tls", "de440s-inner-cassini.bsp", "../fixtures/synthetic-tt-steady.tsc"],
+  "window": { "start": "2004-03-20T00:00:00", "stop": "2004-11-15T00:00:00" },
+  "created": "2004-03-19T00:00:00",
+  "bodies": [
+    { "id": 0, "parent": null },
+    { "id": 10, "parent": 0, "interval": 1382400, "degree": 10, "radiiFrom": "SUN" }
+  ],
+  "time": [
+    { "base": 5, "hostStart": 133000000, "etOffset": 0, "rate": 1.0 },
+    { "base": 3, "sclk": -903, "maxErrorSeconds": 1e-7 },
+    { "base": 2, "hostStart": 5000000, "etOffset": 5000000.25, "rate": 0.999999 },
+    { "base": 2, "hostStart": 0, "etOffset": 0, "rate": 1.0 }
+  ]
+}

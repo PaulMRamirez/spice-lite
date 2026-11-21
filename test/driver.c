@@ -7,7 +7,11 @@
  *                                byte across hosts)
  *   driver fuzz <blob> <n> <seed>  corrupts copies of the blob n times and
  *                                runs a fixed battery of calls on each; meant
- *                                to run under the sanitizers
+ *                                to run under the sanitizers. Some copies
+ *                                have only their TIME section rearranged or
+ *                                overwritten, and on every copy the library
+ *                                accepts, lite_host2et is compared with a
+ *                                scan of every TIME entry
  *
  * Doubles travel as 16 hexadecimal digits of their bit pattern, so nothing is
  * lost or rounded in transit. This file is test code and uses libc freely.
@@ -230,25 +234,215 @@ static void battery(double t0, double t1)
     }
 }
 
+/* ---- the TIME section under the fuzzer ----------------------------------
+ *
+ * lite_host2et finds its piece by binary search, which is only right on a
+ * table sorted by time base, then host_start, with no two entries alike.
+ * lite_init must therefore refuse any other table. The functions below hold
+ * both to an independent reference: time_sorted() restates the order rule,
+ * and time_scan() is the conversion as it was before the search, a scan of
+ * every entry. */
+
+#define T_ENTRY 32u
+
+static uint16_t t_base(const uint8_t *e) { return (uint16_t)(e[0] | (e[1] << 8)); }
+
+static double t_f64(const uint8_t *e, uint32_t off)
+{
+    double d;
+    memcpy(&d, e + off, 8);
+    return d;
+}
+
+/* Finds the TIME section through the directory. Call only on a blob that is
+ * known to be well formed (the original, or a copy lite_init accepted). */
+static int time_find(const uint8_t *b, uint32_t *off, uint32_t *count)
+{
+    uint32_t nsec = (uint32_t)(b[20] | (b[21] << 8)), i;
+    for (i = 0; i < nsec; i++) {
+        const uint8_t *d = b + 64u + 16u * i;
+        if ((d[0] | (d[1] << 8)) == 1) {
+            memcpy(off, d + 4, 4);
+            memcpy(count, d + 12, 4);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int time_sorted(const uint8_t *tab, uint32_t count)
+{
+    uint32_t i;
+    for (i = 0; i < count; i++) {
+        const uint8_t *e = tab + i * T_ENTRY;
+        double a = t_f64(e, 8), b = t_f64(e, 16), c = t_f64(e, 24);
+        if (a - a != 0.0 || b - b != 0.0 || c - c != 0.0) {
+            return 0;
+        }
+        if (i > 0u) {
+            const uint8_t *p = e - T_ENTRY;
+            if (t_base(e) < t_base(p) || (t_base(e) == t_base(p) && !(a > t_f64(p, 8)))) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static int time_scan(const uint8_t *tab, uint32_t count, uint32_t time_base, uint32_t seconds,
+                     uint32_t useconds, double *et)
+{
+    const uint8_t *best = 0;
+    double host;
+    uint32_t i;
+    if (useconds >= 1000000u) {
+        return LITE_BAD_ARG;
+    }
+    host = (double)seconds + (double)useconds * 1.0e-6;
+    for (i = 0; i < count; i++) {
+        const uint8_t *e = tab + i * T_ENTRY;
+        if (t_base(e) == (uint16_t)time_base && t_f64(e, 8) <= host) {
+            if (best == 0 || t_f64(e, 8) >= t_f64(best, 8)) {
+                best = e;
+            }
+        }
+    }
+    if (best == 0) {
+        return LITE_OUT_OF_COVERAGE;
+    }
+    *et = t_f64(best, 16) + t_f64(best, 24) * (host - t_f64(best, 8));
+    return LITE_OK;
+}
+
+static long time_compared;
+
+/* On a blob the library accepted: its TIME table must be sorted, and readings
+ * at, just before, and just after entry starts, in the entries' own bases and
+ * in others, must convert exactly as the scan converts them. */
+static void time_check(const uint8_t *copy)
+{
+    uint32_t off = 0, count = 0, k;
+    const uint8_t *tab;
+    if (!time_find(copy, &off, &count)) {
+        return;
+    }
+    tab = copy + off;
+    if (!time_sorted(tab, count)) {
+        printf("fault: lite_init accepted a TIME section that is not sorted\n");
+        exit(1);
+    }
+    for (k = 0; k < 24u; k++) {
+        uint32_t base = 3u, sec = rng(), usec = rng() % 1000000u;
+        double want = 0, got = 0;
+        int sw, sg;
+        if (count > 0u && (k % 4u) != 3u) {
+            const uint8_t *e = tab + (rng() % count) * T_ENTRY;
+            double h = t_f64(e, 8);
+            base = t_base(e);
+            if (h >= 0.0 && h < 4294967295.0) {
+                double us = (h - (double)(uint32_t)h) * 1.0e6 + 0.5;
+                sec = (uint32_t)h;
+                usec = us < 999999.0 ? (uint32_t)us : 999999u;
+                if ((k % 4u) == 1u) { /* a microsecond earlier */
+                    if (usec > 0u) usec--;
+                    else if (sec > 0u) { sec--; usec = 999999u; }
+                } else if ((k % 4u) == 2u) { /* somewhat later */
+                    sec += rng() % 50u;
+                }
+            }
+        }
+        if ((k % 8u) == 7u) {
+            base = rng() % 8u; /* often a base the blob lacks */
+        } else if ((k % 8u) == 6u) {
+            base += 65536u; /* only the low 16 bits of the argument count */
+        }
+        sw = time_scan(tab, count, base, sec, usec, &want);
+        sg = lite_host2et(base, sec, usec, &got);
+        if (sw != sg || (sw == LITE_OK && memcmp(&want, &got, 8) != 0)) {
+            printf("fault: lite_host2et(%u, %u, %u) gave status %d, a scan of every entry gives %d%s\n",
+                   base, sec, usec, sg, sw, sw == sg ? " and a different time" : "");
+            exit(1);
+        }
+        time_compared++;
+    }
+}
+
+/* Rearranges or overwrites entries of the copy's TIME table, leaving the rest
+ * of the blob alone. Most of these edits break the order; some keep it. */
+static void time_edit(uint8_t *copy, uint32_t off, uint32_t count)
+{
+    uint8_t *tab = copy + off, tmp[T_ENTRY];
+    uint32_t i = rng() % count, j = rng() % (count - 1u), kind = rng() % 8u;
+    if (j >= i) {
+        j++;
+    }
+    if (kind == 0u) { /* swap two entries */
+        memcpy(tmp, tab + i * T_ENTRY, T_ENTRY);
+        memcpy(tab + i * T_ENTRY, tab + j * T_ENTRY, T_ENTRY);
+        memcpy(tab + j * T_ENTRY, tmp, T_ENTRY);
+    } else if (kind == 1u) { /* one entry twice: two pieces that start together */
+        memcpy(tab + i * T_ENTRY, tab + j * T_ENTRY, T_ENTRY);
+    } else if (kind == 2u) { /* one start copied onto another: an overlap */
+        memcpy(tab + i * T_ENTRY + 8u, tab + j * T_ENTRY + 8u, 8);
+    } else if (kind == 3u) { /* a start moved a little, which may or may not cross a neighbor */
+        double h = t_f64(tab + i * T_ENTRY, 8) + ((double)(rng() % 2001u) - 1000.0) * (double)(1u << (rng() % 16u)) * 1.0e-3;
+        memcpy(tab + i * T_ENTRY + 8u, &h, 8);
+    } else if (kind == 4u) { /* a time base changed */
+        tab[i * T_ENTRY] = (uint8_t)(tab[i * T_ENTRY] + 1u + rng() % 3u);
+    } else if (kind == 5u) { /* a run of entries reversed */
+        uint32_t a = i < j ? i : j, b = i < j ? j : i;
+        while (a < b) {
+            memcpy(tmp, tab + a * T_ENTRY, T_ENTRY);
+            memcpy(tab + a * T_ENTRY, tab + b * T_ENTRY, T_ENTRY);
+            memcpy(tab + b * T_ENTRY, tmp, T_ENTRY);
+            a++;
+            b--;
+        }
+    } else if (kind == 6u) { /* a start that is not a finite number */
+        tab[i * T_ENTRY + 14u] = 0xF0u;
+        tab[i * T_ENTRY + 15u] = (rng() & 1u) ? 0x7Fu : 0xFFu;
+    } else { /* the rate and offset rewritten: the order is untouched */
+        double r = 1.0 + ((double)(rng() % 2001u) - 1000.0) * 1.0e-9, o = (double)(rng() % 100000u) * 0.01;
+        memcpy(tab + i * T_ENTRY + 16u, &o, 8);
+        memcpy(tab + i * T_ENTRY + 24u, &r, 8);
+    }
+}
+
 static int fuzz(const char *path, int iterations, uint32_t seed)
 {
     uint32_t len;
     uint8_t *orig = load(path, &len);
     double t0, t1;
-    int it, accepted = 0;
+    int it, accepted = 0, time_edits = 0, time_kept = 0, time_refused = 0;
+    uint32_t time_off = 0, time_count = 0;
+    int has_time = time_find(orig, &time_off, &time_count) && time_count >= 2u;
     memcpy(&t0, orig + 24, 8);
     memcpy(&t1, orig + 32, 8);
     rng_state = seed ? seed : 1u;
     for (it = 0; it < iterations; it++) {
-        uint32_t n = len;
+        uint32_t n = len, init_flags;
         uint8_t *copy;
-        int edits = 1 + (int)(rng() % 4u), e;
+        int edits = 1 + (int)(rng() % 4u), e, st, only_time = 0;
         uint32_t mode = rng() % 10u;
         if (mode == 0u) {
             n = rng() % (len + 1u); /* truncation */
         }
         copy = malloc(n ? n : 1u);
         memcpy(copy, orig, n);
+        if (has_time && (mode == 1u || mode == 2u)) {
+            /* the TIME table rearranged or overwritten; on half of these
+             * nothing else is touched, so the verdict of lite_init can be
+             * checked against the order rule exactly */
+            int rounds = 1 + (int)(rng() % 2u);
+            while (rounds-- > 0) {
+                time_edit(copy, time_off, time_count);
+            }
+            time_edits++;
+            if (mode == 1u) {
+                only_time = 1;
+                edits = 0;
+            }
+        }
         for (e = 0; e < edits && n > 0u; e++) {
             /* most edits land in the header, directory, and section tables,
              * where a wrong offset or count does the most damage */
@@ -265,8 +459,26 @@ static int fuzz(const char *path, int iterations, uint32_t seed)
                 copy[pos] = 0u;
             }
         }
-        if (lite_init(copy, n, (rng() % 8u) ? LITE_INIT_SKIP_CRC : 0u) == LITE_OK) {
+        init_flags = (rng() % 8u) ? LITE_INIT_SKIP_CRC : 0u;
+        st = lite_init(copy, n, init_flags);
+        if (st == LITE_OK) {
             accepted++;
+            time_check(copy);
+        }
+        if (only_time && init_flags == LITE_INIT_SKIP_CRC) {
+            /* nothing but the TIME table changed and the checksum is not
+             * looked at: accepted exactly when the table is still sorted */
+            int sorted = time_sorted(copy + time_off, time_count);
+            if ((st == LITE_OK) != sorted) {
+                printf("fault: a TIME section that is %s was %s\n", sorted ? "sorted" : "not sorted",
+                       st == LITE_OK ? "accepted" : "refused");
+                return 1;
+            }
+            if (sorted) {
+                time_kept++;
+            } else {
+                time_refused++;
+            }
         }
         battery(t0, t1);
         (void)lite_init(0, 0, 0);
@@ -274,6 +486,10 @@ static int fuzz(const char *path, int iterations, uint32_t seed)
     }
     printf("fuzz: %d iterations, %d blobs accepted, %d rejected, no faults\n", iterations, accepted,
            iterations - accepted);
+    printf("time: %d TIME sections rearranged or overwritten; of those changed in nothing else and loaded "
+           "with the checksum skipped, %d were out of order or not finite and refused, %d were still sorted "
+           "and accepted; %ld conversions matched a scan of every entry\n",
+           time_edits, time_refused, time_kept, time_compared);
     free(orig);
     return 0;
 }

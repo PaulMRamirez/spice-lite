@@ -15,67 +15,39 @@
 // (the unit of SCLK_PARTITION_START and SCLK_PARTITION_END) and ticksPerCount
 // is the product of every modulus but the first.
 //
-// cspice-wasm binds sce2c and sct2e but not scpart or the kernel pool readers,
-// so the structure of the clock (moduli, partitions, where the coefficient
-// records start) is read here from the kernel text. The numbers that matter,
-// the ET at each clock reading, always come from CSPICE.
+// The structure of the clock (moduli, partitions, where the coefficient records
+// start) is read from the kernel pool and scpart through cspice-wasm, so
+// CSPICE's own text kernel reader decides what the kernel says. The numbers
+// that matter, the ET at each clock reading, also come from CSPICE.
 
 const US = 1e6; // microsecond readings per host second
 
-// ---- the clock's structure, from the SCLK kernel text ----------------------
+// ---- the clock's structure, from the kernel pool ----------------------------
 
-function poolVariables(text, wanted) {
-  const vars = new Map();
-  const lines = text.split(/\r?\n/);
-  let data = '';
-  let inData = false;
-  for (const line of lines) {
-    const t = line.trim();
-    if (/^\\begindata\b/i.test(t)) { inData = true; continue; }
-    if (/^\\begintext\b/i.test(t)) { inData = false; continue; }
-    if (inData) data += line + '\n';
-  }
-  const re = /([A-Za-z0-9_]+)\s*(\+?=)\s*(\(([^)]*)\)|[^\s(]+)/g;
-  for (let m; (m = re.exec(data)); ) {
-    if (!wanted.has(m[1])) continue;
-    const body = m[4] ?? m[3];
-    const values = body.split(/[\s,]+/).filter(Boolean).map((s) => Number(s.replace(/[dD]/, 'E')));
-    if (values.some((v) => !Number.isFinite(v))) throw new Error(`SCLK kernel: ${m[1]} holds something that is not a number`);
-    vars.set(m[1], m[2] === '+=' ? [...(vars.get(m[1]) ?? []), ...values] : values);
-  }
-  return vars;
-}
-
-const looksBinary = (bytes) => {
-  const n = Math.min(bytes.length, 512);
-  for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
-  return false;
-};
-
-// Reads the type 1 SCLK definition of one clock from the furnished kernels (an
-// array of byte arrays, in furnsh order; a later kernel replaces an earlier
-// one's variables, as in the kernel pool).
-export function readSclk(kernelBytes, sclk) {
+// Reads the type 1 SCLK definition of one clock from the kernels furnished to
+// the engine. Values go through gdpool (doubles), since moduli such as 1e12 do
+// not fit CSPICE's 32-bit integers.
+export async function readSclk(spice, sclk) {
   const id = String(-sclk);
   const names = {
     type: `SCLK_DATA_TYPE_${id}`, system: `SCLK01_TIME_SYSTEM_${id}`, fields: `SCLK01_N_FIELDS_${id}`,
-    moduli: `SCLK01_MODULI_${id}`, offsets: `SCLK01_OFFSETS_${id}`,
-    partStart: `SCLK_PARTITION_START_${id}`, partEnd: `SCLK_PARTITION_END_${id}`, coeffs: `SCLK01_COEFFICIENTS_${id}`,
+    moduli: `SCLK01_MODULI_${id}`, coeffs: `SCLK01_COEFFICIENTS_${id}`,
   };
-  const wanted = new Set(Object.values(names));
-  const vars = new Map();
-  for (const bytes of kernelBytes) {
-    if (looksBinary(bytes)) continue;
-    for (const [k, v] of poolVariables(new TextDecoder().decode(bytes), wanted)) vars.set(k, v);
-  }
-  const get = (key) => vars.get(names[key]);
-  if (!get('type')) throw new Error(`no furnished kernel defines spacecraft clock ${sclk} (${names.type} is missing)`);
-  if (get('type')[0] !== 1) throw new Error(`spacecraft clock ${sclk} is SCLK type ${get('type')[0]}; only type 1 is supported`);
-  const moduli = get('moduli'), partStart = get('partStart'), partEnd = get('partEnd'), coeffs = get('coeffs');
-  if (!moduli?.length || !partStart?.length || !partEnd?.length || !coeffs?.length) throw new Error(`spacecraft clock ${sclk}: the kernel lacks moduli, partitions, or coefficients`);
-  if (get('fields') && get('fields')[0] !== moduli.length) throw new Error(`spacecraft clock ${sclk}: the field count and the moduli disagree`);
-  if (partStart.length !== partEnd.length) throw new Error(`spacecraft clock ${sclk}: partition starts and ends differ in number`);
+  const get = async (key) => {
+    const info = await spice.dtpool(names[key]);
+    if (!info.found) return undefined;
+    if (info.type !== 'N') throw new Error(`SCLK kernel: ${names[key]} holds something that is not a number`);
+    return await spice.gdpool(names[key]) ?? undefined;
+  };
+  const type = await get('type');
+  if (!type) throw new Error(`no furnished kernel defines spacecraft clock ${sclk} (${names.type} is missing)`);
+  if (type[0] !== 1) throw new Error(`spacecraft clock ${sclk} is SCLK type ${type[0]}; only type 1 is supported`);
+  const moduli = await get('moduli'), coeffs = await get('coeffs'), fields = await get('fields'), system = await get('system');
+  if (!moduli?.length || !coeffs?.length) throw new Error(`spacecraft clock ${sclk}: the kernel lacks moduli or coefficients`);
+  if (fields && fields[0] !== moduli.length) throw new Error(`spacecraft clock ${sclk}: the field count and the moduli disagree`);
   if (coeffs.length % 3 !== 0) throw new Error(`spacecraft clock ${sclk}: the coefficients are not whole records of three`);
+  const { pstart: partStart, pstop: partEnd } = await spice.scpart(sclk);
+  if (!partStart.length || partStart.length !== partEnd.length) throw new Error(`spacecraft clock ${sclk}: the kernel defines no usable partitions`);
   const ticksPerCount = moduli.slice(1).reduce((a, b) => a * b, 1);
   // Partition bounds are in the clock's own ticks; encoded SCLK (what sct2e
   // takes) is the tick count with every earlier partition's length added and
@@ -90,7 +62,7 @@ export function readSclk(kernelBytes, sclk) {
   }
   const recordStarts = [];
   for (let i = 0; i < coeffs.length; i += 3) recordStarts.push(coeffs[i]);
-  return { sclk, timeSystem: get('system')?.[0] ?? 1, moduli, ticksPerCount, partitions, recordStarts };
+  return { sclk, timeSystem: system?.[0] ?? 1, moduli, ticksPerCount, partitions, recordStarts };
 }
 
 // ---- readings ---------------------------------------------------------------
@@ -175,16 +147,16 @@ async function measure(truth, p, n) {
 // ---- the entry point --------------------------------------------------------
 
 // entry: { base, sclk, maxErrorSeconds, maxPieces?, partition? }
-// window: [et0, et1]. kernelBytes: the furnished kernels' bytes, in order.
+// window: [et0, et1].
 // Returns the TIME pieces and a record of the fit for the report and PROV.
-export async function sclkTimePieces(spice, kernelBytes, entry, window) {
+export async function sclkTimePieces(spice, entry, window) {
   const tol = entry.maxErrorSeconds;
   const maxPieces = entry.maxPieces ?? 256;
   const who = `time base ${entry.base}, spacecraft clock ${entry.sclk}`;
   if (!Number.isInteger(entry.sclk) || !Number.isInteger(entry.base)) throw new Error(`${who}: base and sclk must be integers`);
   if (!(tol > 0) || !Number.isFinite(tol)) throw new Error(`${who}: maxErrorSeconds must be a positive number`);
   if (!Number.isInteger(maxPieces) || maxPieces < 1) throw new Error(`${who}: maxPieces must be a positive integer`);
-  const clock = readSclk(kernelBytes, entry.sclk);
+  const clock = await readSclk(spice, entry.sclk);
   const T = clock.ticksPerCount;
 
   let e0, e1;

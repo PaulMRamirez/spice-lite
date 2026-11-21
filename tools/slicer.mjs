@@ -87,8 +87,28 @@ class Writer {
 
 const f64s = (arr) => new Uint8Array(new Float64Array(arr).buffer.slice(0));
 
+// TIME entries in the order the format requires (SPEC.md, "TIME"): ascending by
+// time base, then by host_start, with no two pieces of one base starting at the
+// same reading. The library refuses any other order, because it finds a piece
+// by binary search. Returns a sorted copy; throws on a piece it cannot place.
+export function sortTime(time) {
+  for (const t of time) {
+    if (!Number.isInteger(t.base) || t.base < 0 || t.base > 65535) throw new Error(`TIME: time base ${t.base} is not a 16-bit unsigned integer`);
+    if (![t.hostStart, t.etStart, t.rate].every(Number.isFinite)) throw new Error(`TIME: a piece of time base ${t.base} holds a number that is not finite`);
+  }
+  if (time.length > 4096) throw new Error(`TIME: ${time.length} pieces; a blob holds at most 4,096 (loosen a clock's tolerance or shorten the window)`);
+  const sorted = [...time].sort((a, b) => a.base - b.base || a.hostStart - b.hostStart);
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].base === sorted[i - 1].base && sorted[i].hostStart === sorted[i - 1].hostStart) {
+      throw new Error(`TIME: two pieces of time base ${sorted[i].base} start at host second ${sorted[i].hostStart}; a reading there would have two answers`);
+    }
+  }
+  return sorted;
+}
+
 function buildBlob(model) {
-  const { time, bodies, ephem, orient, sites, prov, flags, created } = model;
+  const { bodies, ephem, orient, sites, prov, flags, created } = model;
+  const time = sortTime(model.time);
   const sections = [];
 
   const mk = (type, required, entries, entrySize, fill, tail = []) => {
@@ -309,10 +329,8 @@ async function sliceOrient(spice, spec, window) {
 export async function slice(config, kernelDir, configDir = kernelDir) {
   const spice = await createSpiceEngine();
   const kernels = [];
-  const kernelBytes = [];
   for (const k of config.kernels) {
     const bytes = new Uint8Array(readFileSync(resolve(/^\.\.?\//.test(k) ? configDir : kernelDir, k)));
-    kernelBytes.push(bytes);
     await spice.furnsh(basename(k), bytes);
     kernels.push({ name: basename(k), sha256: createHash('sha256').update(bytes).digest('hex') });
   }
@@ -361,18 +379,20 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
   // TIME pieces: an entry that names a spacecraft clock ("sclk") is derived from
   // the SCLK kernel within its tolerance (tools/sclk-time.mjs); any other entry
   // is one explicit piece, written as given.
-  const time = [];
+  const pieces = [];
   const timeFit = [];
   for (const t of config.time ?? []) {
     if (t.sclk !== undefined) {
-      const derived = await sclkTimePieces(spice, kernelBytes, t, window);
-      time.push(...derived.pieces);
+      const derived = await sclkTimePieces(spice, t, window);
+      pieces.push(...derived.pieces);
       timeFit.push(derived.fit);
     } else {
-      time.push({ base: t.base, hostStart: t.hostStart, etStart: window[0] + (t.etOffset ?? 0), rate: t.rate ?? 1 });
+      pieces.push({ base: t.base, hostStart: t.hostStart, etStart: window[0] + (t.etOffset ?? 0), rate: t.rate ?? 1 });
     }
   }
-  time.sort((a, b) => a.base - b.base || a.hostStart - b.hostStart);
+  // Written sorted by base, then start, as the format requires; two entries of
+  // the config that put a piece of one base at the same reading are refused.
+  const time = sortTime(pieces);
 
   const created = config.created ? await et(config.created) : window[0];
   const report = {
