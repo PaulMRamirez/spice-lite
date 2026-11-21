@@ -307,11 +307,11 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 
 | Quantity | Target | Measured |
 | --- | --- | --- |
-| Module size | under 24 KiB | 14,695 bytes with the default checksum table (13,620 with the smallest, 17,712 with the largest) |
+| Module size | under 24 KiB | 18,825 bytes with the default checksum table (17,750 with the smallest, 21,842 with the largest) |
 | Host imports | none | none |
 | Declared memory | one 64 KiB page | one page; with a 13 KB Sun, Earth, Moon blob, 45,944 bytes of it stay free |
-| SpaceWasm compiled IR | under 64 KiB | 23,120 bytes |
-| SpaceWasm heap for the load | fits flight defaults | 25,282 bytes in 4 of 16 pages of 8,192 bytes |
+| SpaceWasm compiled IR | under 64 KiB | 30,434 bytes |
+| SpaceWasm heap for the load | fits flight defaults | 32,550 bytes in 4 of 16 pages of 8,192 bytes |
 | Time conversion | under 500 instructions | 106 (163 from serialized F Prime time) |
 | Geometric state, one segment | under 2,500 instructions | 1,711 to 1,982 |
 | Geometric state, up to three segments | under 6,000 instructions | 3,495 (two), 4,601 (three) |

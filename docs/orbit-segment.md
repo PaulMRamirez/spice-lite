@@ -85,7 +85,7 @@ How to read them:
 
 A kind 4 state costs about what a degree 12 Chebyshev record does, and is within the 2,500-instruction ceiling `SPEC.md` sets for a one-segment geometric state up to the eccentricities tested (0.3). It is not within that ceiling everywhere the model is accepted: with the eccentricity forced to the limit of 0.9 the Kepler solve takes several more steps and the worst call is 3,207 instructions. The script holds that case to 3,500. Most of the cost is trigonometry: three full sine and cosine pairs (mean argument, inclination, node), one reduced pair for the along-track correction, and one per Kepler step but the last.
 
-Adding kind 4 grew the module from 14,695 to 16,650 bytes with the author's clang 18. The compiled SpaceWasm IR went from 23,120 to 26,570 bytes and the interpreter heap for the load from 25,282 to 40,861 bytes, and the existing calls cost about 1% more (a one-segment Chebyshev state went from 1,982 to 2,002 instructions); all remain inside their ceilings. The figures in `SPEC.md` and `docs/cost-measurements.md` for the other calls predate kind 4 and were not regenerated on this branch.
+Adding kind 4 grew the module from 14,695 to 16,650 bytes with the author's clang 18. The compiled SpaceWasm IR went from 23,120 to 26,570 bytes and the interpreter heap for the load from 25,282 to 40,861 bytes, and the existing calls cost about 1% more (a one-segment Chebyshev state went from 1,982 to 2,002 instructions); all remain inside their ceilings. With the sub-point and occultation calls also in, the module is 18,825 bytes and the IR 30,434; `SPEC.md` and `docs/cost-measurements.md` carry the figures for the combined library.
 
 ## What the tests hold
 
