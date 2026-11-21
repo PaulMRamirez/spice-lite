@@ -156,6 +156,26 @@ test('the committed sclk-drift blob: four rates, a step, and two partitions, to 
   console.log(line('sclk-drift, 30 days', report, await check(blob, report, 901)));
 });
 
+test('the committed sclk-many blob: about two hundred pieces, each found by the search, to a tenth of a microsecond', { skip }, async () => {
+  await setup();
+  const report = JSON.parse(readFileSync(resolve(blobDir, 'sclk-many.report.json'), 'utf8'));
+  const blob = new Uint8Array(readFileSync(resolve(blobDir, 'sclk-many.slb')));
+  const fit = report.timeFit[0];
+  assert.equal(fit.toleranceSeconds, 1e-7);
+  assert.ok(fit.pieces >= 200, `${fit.pieces} pieces`);
+  // Other time bases sit below and above the clock's in the sorted table.
+  assert.deepEqual([...new Set(report.time.map((t) => t.base))], [2, 3, 5]);
+  console.log(line('sclk-many, 240 days', report, await check(blob, report, 905)));
+  // The explicit pieces of the neighboring bases answer as written.
+  const api = await load(blob);
+  const w0 = report.windowEt[0];
+  assert.equal(api.host2et(2, 100, 500000).et, w0 + 100.5);
+  assert.equal(api.host2et(2, 5000010, 0).et, w0 + 5000000.25 + 0.999999 * 10);
+  assert.equal(api.host2et(5, 133000007, 0).et, w0 + 7);
+  assert.equal(api.host2et(5, 132999999, 999999).status, 1);
+  assert.equal(api.host2et(4, 133000007, 0).status, 1);
+});
+
 test('the same clock to a millisecond needs only the structural pieces', { skip }, async () => {
   await setup();
   const { blob, report } = await slice(configFor('drift-ms', JUNE, [{ base: 3, sclk: -901, maxErrorSeconds: 1e-3 }]), kernelDir, blobDir);

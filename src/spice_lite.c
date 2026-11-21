@@ -688,10 +688,19 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
             return 0;
         }
     }
+    /* TIME: finite numbers, and entries in strictly ascending order of time
+     * base, then host_start, which is what lets lite_host2et search. Two
+     * pieces of one base with the same start are refused with the rest. */
     for (i = 0; i < G.sec[SEC_TIME].count; i++) {
         const uint8_t *e = b + G.sec[SEC_TIME].off + i * TIME_ENTRY;
         if (!finite64(rdf64(e + 8)) || !finite64(rdf64(e + 16)) || !finite64(rdf64(e + 24))) {
             return 0;
+        }
+        if (i > 0u) {
+            uint32_t base = rd16(e), prev = rd16(e - TIME_ENTRY);
+            if (base < prev || (base == prev && !(rdf64(e + 8) > rdf64(e - TIME_ENTRY + 8)))) {
+                return 0;
+            }
         }
     }
     for (i = 0; i < G.sec[SEC_SITE].count; i++) {
@@ -730,9 +739,9 @@ int lite_init(const void *blob, uint32_t len, uint32_t flags)
 
 int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double *et)
 {
-    uint32_t i, n;
+    uint32_t base;
     double host;
-    const uint8_t *best = 0;
+    const uint8_t *lo, *hi, *tab;
     if (!G.ready) {
         return LITE_BAD_BLOB;
     }
@@ -740,19 +749,33 @@ int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double
         return LITE_BAD_ARG;
     }
     host = (double)seconds + (double)useconds * 1.0e-6;
-    n = G.sec[SEC_TIME].count;
-    for (i = 0; i < n; i++) {
-        const uint8_t *e = G.b + G.sec[SEC_TIME].off + i * TIME_ENTRY;
-        if (rd16(e) == (uint16_t)time_base && rdf64(e + 8) <= host) {
-            if (best == 0 || rdf64(e + 8) >= rdf64(best + 8)) {
-                best = e;
-            }
+    base = (uint16_t)time_base;
+    /* lite_init has checked that the entries ascend by time base, then by
+     * host_start, with no two alike, so the entries that sort at or before
+     * (base, host) are a prefix of the table. The binary search below finds
+     * where that prefix ends, at lo; the entry just before lo is the piece of
+     * this base with the latest host_start not after the reading, if the
+     * prefix is not empty and its last entry has this base. That is the same
+     * piece a scan of every entry selects. A blob is at most 1 MiB, so the
+     * table has fewer than 2^15 entries and the search takes at most 15
+     * probes. The written form (pointers, the base tested for equality
+     * first) is the cheapest of several measured under SpaceWasm. */
+    tab = G.b + G.sec[SEC_TIME].off;
+    lo = tab;
+    hi = tab + G.sec[SEC_TIME].count * TIME_ENTRY;
+    while (lo < hi) {
+        const uint8_t *mid = lo + (((uint32_t)(hi - lo) >> 1) & ~(TIME_ENTRY - 1u));
+        uint32_t b = rd16(mid);
+        if (b == base ? rdf64(mid + 8) <= host : b < base) {
+            lo = mid + TIME_ENTRY;
+        } else {
+            hi = mid;
         }
     }
-    if (best == 0) {
+    if (lo == tab || rd16(lo - TIME_ENTRY) != base) {
         return LITE_OUT_OF_COVERAGE;
     }
-    *et = rdf64(best + 16) + rdf64(best + 24) * (host - rdf64(best + 8));
+    *et = rdf64(lo - 16) + rdf64(lo - 8) * (host - rdf64(lo - 24));
     return LITE_OK;
 }
 

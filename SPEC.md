@@ -23,7 +23,7 @@ Full CSPICE runs correctly as a guest of the SpaceWasm interpreter but needs 96.
 - **No allocation.** The library never grows memory and holds no state beyond one small static block.
 - **No imports.** The sequence fetches the clock from its host and passes it in, so the library runs unchanged in F Prime, a browser, or a test harness.
 - **Wasm 1.0 arithmetic only.** Add, subtract, multiply, divide, and square root on 64-bit floats, plus the library's own trigonometry.
-- **Bounded cost.** Every lookup is constant time: uniform record spacing means an index is one subtraction and one division.
+- **Bounded cost.** Every lookup is constant time: uniform record spacing means an index is one subtraction and one division. The one exception is the TIME section, whose pieces are of unequal length; it is kept sorted and searched by bisection, at most 15 probes for the largest table a blob can hold.
 
 ## Blob layout
 
@@ -93,7 +93,9 @@ Each entry maps a stretch of the host clock to ET with a straight line: `et = et
 | 16 | 8 | `et_start` | ET at `host_start` |
 | 24 | 8 | `rate` | ET seconds per host second |
 
-A reading uses the piece with the same base and the latest `host_start` not after it. A piece has no end: it answers until the next piece of its base begins, and the last one is extended in a straight line past the blob's window. A reading below every piece of its base is out of coverage. Host seconds are whole seconds plus microseconds as one 64-bit float, formed as `seconds + microseconds * 1e-6`; every microsecond reading of a 32-bit second count gives a distinct value, but above 2^30 seconds the float resolves only 0.24 microseconds (0.48 above 2^31).
+A reading uses the piece with the same base and the latest `host_start` not after it. A piece has no end: it answers until the next piece of its base begins, and the last one is extended in a straight line past the blob's window. A reading below every piece of its base is out of coverage.
+
+Entries are sorted: ascending by `time_base`, and within one base strictly ascending by `host_start`, so no two pieces of a base start at the same reading (two starts of plus and minus zero count as the same). `lite_init` checks the order along with the finiteness of the three numbers and rejects a blob that breaks it as a bad blob; a section in any other order, or with two pieces that would both claim a reading, never becomes active. The order is what lets the library find a piece by binary search instead of reading every entry, and it changes no answer: on a sorted table the search selects exactly the piece the rule above names. A writer sorts before writing; the reference slicer does, whatever order the configuration lists its entries in, and refuses a configuration that puts two pieces of one base at the same reading. Only the low 16 bits of the time base a caller passes are compared. Host seconds are whole seconds plus microseconds as one 64-bit float, formed as `seconds + microseconds * 1e-6`; every microsecond reading of a 32-bit second count gives a distinct value, but above 2^30 seconds the float resolves only 0.24 microseconds (0.48 above 2^31).
 
 #### Pieces from a spacecraft clock kernel
 
@@ -121,7 +123,7 @@ What limits a piece's length, once the clock's own rate changes are split out, i
 | Steady clock on TT | 2004-03-20, where it bends most | 6 | 0.92 microseconds | 1 | 27 microseconds |
 | Four rates, a 4 ms step, two partitions, on TT | 2004-06-27 | 6 | 0.92 microseconds | 5 | 0.98 microseconds |
 
-The errors are multiples of 0.03 microseconds because that is the spacing of 64-bit ET values in 2004; a tolerance near that spacing cannot be met with any number of pieces. The library scans every TIME entry on each conversion, so the cost grows with the piece count: under SpaceWasm, 83 instructions with one piece, up to 248 with the six pieces of `test/blobs/sclk-drift.slb`, and up to 898 with 26, or roughly 60 plus 33 per piece. The 500-instruction ceiling for a time conversion holds to about a dozen pieces.
+The errors are multiples of 0.03 microseconds because that is the spacing of 64-bit ET values in 2004; a tolerance near that spacing cannot be met with any number of pieces. The library finds the piece by binary search over the sorted entries, so the cost follows the number of probes, which is the whole part of log2 of the piece count plus one, and not the piece count. Under SpaceWasm (the author's clang 18 build; the costliest of many readings on each blob, `docs/cost-measurements.md` has the table) a conversion takes 110 instructions with one piece, up to 165 with the six pieces of `test/blobs/sclk-drift.slb`, up to 221 with 26, up to 304 with the 206 of `test/blobs/sclk-many.slb`, and up to 422 with 4,096: roughly 85 plus 27 per probe. CI holds the 500-instruction ceiling for a time conversion on tables of up to 4,096 pieces. The largest table a 1 MiB blob can hold, 32,717 pieces, takes 15 probes and measured exactly 500, which is at the ceiling and not safely under it, so that case is reported and not held. Before the entries were required sorted the library read every one of them, 60 instructions plus 33 per piece, and the ceiling held only to about a dozen pieces (908 instructions with 26, 6,791 with 206).
 
 ### BODY
 
@@ -307,12 +309,12 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 
 | Quantity | Target | Measured |
 | --- | --- | --- |
-| Module size | under 24 KiB | 18,825 bytes with the default checksum table (17,750 with the smallest, 21,842 with the largest) |
+| Module size | under 24 KiB | 19,059 bytes with the default checksum table (17,984 with the smallest, 22,076 with the largest) |
 | Host imports | none | none |
 | Declared memory | one 64 KiB page | one page; with a 13 KB Sun, Earth, Moon blob, 45,944 bytes of it stay free |
-| SpaceWasm compiled IR | under 64 KiB | 30,434 bytes |
+| SpaceWasm compiled IR | under 64 KiB | 30,842 bytes |
 | SpaceWasm heap for the load | fits flight defaults | 32,550 bytes in 4 of 16 pages of 8,192 bytes |
-| Time conversion | under 500 instructions | 106 (163 from serialized F Prime time) |
+| Time conversion | under 500 instructions | 110 with one TIME piece, 137 with two (188 from serialized F Prime time), at most 304 with 206 pieces and 422 with 4,096; held in CI to 4,096 pieces (see TIME) |
 | Geometric state, one segment | under 2,500 instructions | 1,711 to 1,982 |
 | Geometric state, up to three segments | under 6,000 instructions | 3,495 (two), 4,601 (three) |
 | State with light time and stellar aberration | under 15,000 instructions | 6,531 to 9,627 |
@@ -377,7 +379,7 @@ The slicer is not trusted to grade itself. It writes its fit errors into the blo
 
 1. **Name.** spice-lite is kept for now. Whether a project that is not NAIF's should carry the SPICE name has been put to NAIF; the answer may force a rename.
 2. **Stellar aberration in 0.1.** It is implemented. Whether its dependence on observer velocity accuracy makes it worth keeping for spacecraft observers is open.
-3. **Host time bases.** The slicer now derives the pieces from an SCLK kernel under one stated convention (host seconds are the clock's own count; see TIME). Still open: whether that convention matches what real F Prime deployments put in `TB_SC_TIME`; whether a clock reset should be handled by a second time base, as now, or by a partition number carried in the F Prime time context byte, which `lite_fwtime2et` ignores today; whether the TIME entries should carry their own error bound and an end, so that counts the clock never showed are refused; and whether entries should be required sorted so the library can search instead of scan when a long window needs many pieces. Only type 1 SCLK kernels are read, and the clock's structure is parsed from the kernel text because cspice-wasm does not bind `scpart` or the kernel pool readers.
+3. **Host time bases.** The slicer now derives the pieces from an SCLK kernel under one stated convention (host seconds are the clock's own count; see TIME). Still open: whether that convention matches what real F Prime deployments put in `TB_SC_TIME`; whether a clock reset should be handled by a second time base, as now, or by a partition number carried in the F Prime time context byte, which `lite_fwtime2et` ignores today; whether the TIME entries should carry their own error bound and an end, so that counts the clock never showed are refused; and whether the section should be capped (at 4,096 entries, say) so that the time ceiling holds for every blob the library accepts, since the largest table a 1 MiB blob can hold sits right at it. Entries are now required sorted and the library searches them (see TIME). Only type 1 SCLK kernels are read, and the clock's structure is parsed from the kernel text because cspice-wasm does not bind `scpart` or the kernel pool readers.
 4. **Compact orbit segment.** Kind 4 exists, with its error bounded by measurement like the other kinds. Still open: validation on real orbiter kernels (everything so far is synthetic, with no gravity beyond J2, no third bodies, and no drag); whether to add harmonics that suit eccentric orbits; whether elements should be referred to the central body's equator instead of J2000; splitting records at maneuvers; and the cost of the Kepler solve near the eccentricity limit.
 5. **Checksum.** CRC-32 is the draft choice and it dominates start-up: 20.8 interpreter instructions per byte with the default 1 KiB table, against two to three thousand instructions in total with the check skipped. A Fletcher-style sum over 32-bit words measured at 5.8 instructions per byte with no table, but detects fewer error patterns and would change the format. Whether to keep CRC-32, switch, or rely on uplink integrity is open.
 6. **Real memory configuration.** The one-page target assumes a mission will grant a sequence 64 KiB.

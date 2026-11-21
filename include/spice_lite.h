@@ -58,7 +58,9 @@ extern "C" {
  * 8-byte aligned. Any supplied state is dropped. */
 LITE_API int lite_init(const void *blob, uint32_t len, uint32_t flags);
 
-/* Converts a host clock reading to ET using the TIME section. */
+/* Converts a host clock reading to ET using the TIME section: the piece of
+ * this time base with the latest start not after the reading, found by binary
+ * search (lite_init has checked that the entries are sorted). */
 LITE_API int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double *et);
 
 /* Same, from a serialized F Prime Fw::Time in its default layout: time base
