@@ -143,7 +143,7 @@ test('overlapping TIME pieces (two of one base starting together) are a bad blob
 test('on random sorted tables the search gives what a scan of every entry gives, bit for bit', async () => {
   const rnd = prng(20261122);
   let compared = 0, tables = 0;
-  for (const n of [0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 64, 100, 255, 256, 257, 1000, 4097]) {
+  for (const n of [0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 64, 100, 255, 256, 257, 1000, 4096]) {
     for (let rep = 0; rep < (n > 300 ? 1 : 4); rep++) {
       // One to four time bases, with starts of several kinds: whole seconds,
       // microsecond readings, clustered a microsecond apart, negative, and large.
@@ -184,11 +184,11 @@ test('on random sorted tables the search gives what a scan of every entry gives,
       }
     }
   }
-  console.log(`  ${tables} random sorted TIME tables of 0 to 4,097 pieces, ${compared} conversions identical to the scan`);
+  console.log(`  ${tables} random sorted TIME tables of 0 to 4,096 pieces, ${compared} conversions identical to the scan`);
 });
 
-test('the largest TIME table a blob can hold loads and converts; one entry more does not fit', async () => {
-  const room = Math.floor(((1 << 20) - ((drift.length + 7) & ~7)) / 32);
+test('the largest TIME table the format allows (4,096 entries) loads and converts; one entry more is refused', async () => {
+  const room = 4096;
   const table = Array.from({ length: room }, (_, i) => ({ base: 3, hostStart: 10 * i, etStart: 7e7 + 10 * i, rate: 1 }));
   const api = await load(withTimeTable(drift, table, { fixCrc: false }), { skipCrc: true });
   assert.equal(api.initStatus, 0);
@@ -201,7 +201,7 @@ test('the largest TIME table a blob can hold loads and converts; one entry more 
   const t = table.slice(); [t[room - 2], t[room - 1]] = [t[room - 1], t[room - 2]];
   assert.equal((await load(withTimeTable(drift, t, { fixCrc: false }), { skipCrc: true })).initStatus, 4);
   table.push({ base: 3, hostStart: 10 * room, etStart: 0, rate: 1 });
-  assert.equal((await load(withTimeTable(drift, table, { fixCrc: false }), { skipCrc: true })).initStatus, 4, 'over 1 MiB');
+  assert.equal((await load(withTimeTable(drift, table, { fixCrc: false }), { skipCrc: true })).initStatus, 4, 'over the cap of 4,096 entries');
 });
 
 test('the slicer writes TIME sorted whatever order the pieces are given in, and refuses two pieces that start together', async () => {
@@ -212,6 +212,8 @@ test('the slicer writes TIME sorted whatever order the pieces are given in, and 
   assert.deepEqual(sorted.map((t) => [t.base, t.hostStart]), [[2, 100], [3, -2], [3, 9], [5, 3]]);
   assert.equal(given[0].base, 5, 'the input is left as given');
   assert.throws(() => sortTime([...given, { base: 3, hostStart: 9, etStart: 4, rate: 2 }]), /two pieces of time base 3 start at host second 9/);
+  assert.equal(sortTime(Array.from({ length: 4096 }, (_, i) => ({ base: 3, hostStart: i, etStart: 0, rate: 1 }))).length, 4096);
+  assert.throws(() => sortTime(Array.from({ length: 4097 }, (_, i) => ({ base: 3, hostStart: i, etStart: 0, rate: 1 }))), /at most 4,096/);
   assert.throws(() => sortTime([{ base: 1, hostStart: 0, etStart: 0, rate: 1 }, { base: 1, hostStart: -0, etStart: 0, rate: 1 }]), /two pieces/);
   assert.throws(() => sortTime([{ base: 70000, hostStart: 0, etStart: 0, rate: 1 }]), /not a 16-bit unsigned integer/);
   assert.throws(() => sortTime([{ base: 3, hostStart: NaN, etStart: 0, rate: 1 }]), /not finite/);

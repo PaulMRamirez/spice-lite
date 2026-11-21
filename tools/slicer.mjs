@@ -96,6 +96,7 @@ export function sortTime(time) {
     if (!Number.isInteger(t.base) || t.base < 0 || t.base > 65535) throw new Error(`TIME: time base ${t.base} is not a 16-bit unsigned integer`);
     if (![t.hostStart, t.etStart, t.rate].every(Number.isFinite)) throw new Error(`TIME: a piece of time base ${t.base} holds a number that is not finite`);
   }
+  if (time.length > 4096) throw new Error(`TIME: ${time.length} pieces; a blob holds at most 4,096 (loosen a clock's tolerance or shorten the window)`);
   const sorted = [...time].sort((a, b) => a.base - b.base || a.hostStart - b.hostStart);
   for (let i = 1; i < sorted.length; i++) {
     if (sorted[i].base === sorted[i - 1].base && sorted[i].hostStart === sorted[i - 1].hostStart) {

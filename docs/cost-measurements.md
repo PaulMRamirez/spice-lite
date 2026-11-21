@@ -12,13 +12,13 @@ The counts are deterministic for a given compiler build. CI reruns the measureme
 
 ## Every call, on the large test blob
 
-The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 24,071 bytes; compiled IR 39,750 bytes.
+The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 24,083 bytes; compiled IR 39,776 bytes.
 
 <!-- full-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_init, checksum verified (90 KB blob) | 1,866,868 | 1,867 |
-| lite_init, checksum skipped | 2,996 | 3 |
+| lite_init, checksum verified (90 KB blob) | 1,866,874 | 1,867 |
+| lite_init, checksum skipped | 3,000 | 3 |
 | lite_host2et | 137 | 1 |
 | lite_fwtime2et | 188 | 1 |
 | lite_state, one segment (Moon from Earth-Moon barycenter), geometric | 1,996 | 2 |
@@ -45,8 +45,8 @@ The shipped module declares a single 64 KiB page. The `sun-earth-moon` blob (Sun
 <!-- flight-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_init, checksum verified (13 KB blob) | 275,057 | 276 |
-| lite_init, checksum skipped | 2,295 | 3 |
+| lite_init, checksum verified (13 KB blob) | 275,063 | 276 |
+| lite_init, checksum skipped | 2,299 | 3 |
 | lite_host2et | 110 | 1 |
 | lite_state, Moon from Earth, geometric | 3,387 | 4 |
 | lite_state, Sun from Earth, light time and stellar aberration | 6,393 | 7 |
@@ -61,9 +61,9 @@ Verifying the CRC-32 is the costly part of `lite_init`, and its cost trades agai
 <!-- crc-table:start -->
 | LITE_CRC_TABLES | Table size | Module size | Instructions per blob byte | lite_init on the 13 KB blob | Slices |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 64 bytes | 22,996 bytes | 34.0 | 449,222 | 450 |
-| 1 (default) | 1,024 bytes | 24,071 bytes | 20.8 | 275,057 | 276 |
-| 4 | 4,096 bytes | 27,088 bytes | 13.8 | 183,049 | 184 |
+| 0 | 64 bytes | 23,011 bytes | 34.0 | 449,230 | 450 |
+| 1 (default) | 1,024 bytes | 24,083 bytes | 20.8 | 275,063 | 276 |
+| 4 | 4,096 bytes | 27,100 bytes | 13.8 | 183,055 | 184 |
 <!-- crc-table:end -->
 
 The default is the middle row. A larger table buys less than it would on real hardware, because under an interpreter the cost is dominated by the number of operations, not by memory traffic.
@@ -72,7 +72,7 @@ One experiment that is not in the library: replacing the CRC with running sums o
 
 ## Sub-points and occultation
 
-`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module, and held to ceilings of 8,000 and 18,000 instructions: the script fails if a row exceeds its ceiling. The ceilings are the largest measured rows (6,625 and 15,096) with about a fifth of headroom, enough for the CI compiler's 3% and for small changes, not for a blob with deeper trees or higher degrees than these. The sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in; modeling bodies as ellipsoids in `lite_occulted` added 4,601 bytes to the module and 8,180 bytes to its compiled IR on its own branch (the combined library is 24,071 and 39,750), and the heap `spacewasm validate` reports for the load went from 32,550 bytes in 4 pages to 41,086 in 6 of 16.
+`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module, and held to ceilings of 8,000 and 18,000 instructions: the script fails if a row exceeds its ceiling. The ceilings are the largest measured rows (6,625 and 15,096) with about a fifth of headroom, enough for the CI compiler's 3% and for small changes, not for a blob with deeper trees or higher degrees than these. The sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in; modeling bodies as ellipsoids in `lite_occulted` added 4,601 bytes to the module and 8,180 bytes to its compiled IR on its own branch (the combined library is 24,083 and 39,776), and the heap `spacewasm validate` reports for the load went from 32,550 bytes in 4 pages to 41,086 in 6 of 16.
 
 <!-- geometry-table:start -->
 | Call | Instructions | Slices of 1,000 |
@@ -119,13 +119,12 @@ Against earlier drafts, which modeled both bodies as spheres at 7,040 to 9,372 i
 | 26 | the first 26 clock pieces of sclk-many (30 days to 0.1 microseconds) | 55 | 170 | 221 | yes |
 | 206 | sclk-many (committed; 203 clock pieces and three of other bases) | 416 | 251 | 304 | yes |
 | 256 | synthetic table of 256 pieces (the slicer's default limit for one clock) | 515 | 278 | 318 | yes |
-| 4,096 | synthetic table of 4,096 pieces | 517 | 386 | 422 | yes |
-| 32,717 | synthetic table of 32,717 pieces (the most a 1 MiB blob holds) | 521 | 440 | 500 | no |
+| 4,096 | synthetic table of 4,096 pieces (the most the format allows) | 517 | 386 | 422 | yes |
 <!-- time-table:end -->
 
-A conversion costs about 85 instructions plus 27 for each probe, and a table of n pieces takes at most the whole part of log2(n) plus one probes: one probe for one piece, three for six, five for 26, eight for 206, thirteen for 4,096. The spread within a row is mostly the number of probes a reading happens to need, and the cheapest readings are those of a time base the blob lacks. Tables of up to 4,096 pieces are held to the ceiling. The last row is the largest table the format allows (a blob is at most 1 MiB); its 15 probes come to exactly the ceiling with the author's build, which a build that runs a few percent higher would exceed, so it is measured and shown but not held. Capping the section would close that gap and is listed with the open questions in `SPEC.md`.
+A conversion costs about 85 instructions plus 27 for each probe, and a table of n pieces takes at most the whole part of log2(n) plus one probes: one probe for one piece, three for six, five for 26, eight for 206, thirteen for 4,096. The spread within a row is mostly the number of probes a reading happens to need, and the cheapest readings are those of a time base the blob lacks. The format caps the section at 4,096 entries, so the last row is the largest table a blob may hold and every row is held to the ceiling. Before the cap, the largest table a 1 MiB blob could hold (32,717 entries, 15 probes) measured exactly 500, at the ceiling and not safely under it; that is why the cap exists.
 
-Before the entries were required sorted, `lite_host2et` read every entry: 60 instructions plus 33 per piece. The same readings on the same blobs, measured with the library as it was then (the table of 32,717 pieces is sampled, as above):
+Before the entries were required sorted, `lite_host2et` read every entry: 60 instructions plus 33 per piece. The same readings on the same blobs, measured with the library as it was then:
 
 | TIME pieces | Scan, most instructions | Search, most instructions |
 | --- | --- | --- |
@@ -136,7 +135,6 @@ Before the entries were required sorted, `lite_host2et` read every entry: 60 ins
 | 206 | 6,791 | 304 |
 | 256 | 8,460 | 318 |
 | 4,096 | 135,180 | 422 |
-| 32,717 | 1,079,673 | 500 |
 
 The search costs more than the scan on a table of one or two pieces, by about 30 instructions, and less from about four pieces on. The scan figures are not rerun by CI; they were taken once, at the change.
 

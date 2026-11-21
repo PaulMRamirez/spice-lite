@@ -14,7 +14,7 @@ The point of doing this onboard is that the sequence carries no ground-computed 
 
 | Property | Value |
 | --- | --- |
-| Module size | 29,332 bytes: sequence, library, and blob together |
+| Module size | 29,340 bytes: sequence, library, and blob together |
 | Format | Strict WebAssembly 1.0 |
 | Imports | `fprime_v1`: `time`, `event`, `cmd`, `rsleep`, `exit`; nothing else |
 | Memory | One 64 KiB page, never grown |
@@ -28,7 +28,7 @@ Started with the clock at 14,400 seconds (four hours into the blob's window, whi
 
 | Phase | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| First cycle: `lite_init` with the checksum, then one decision | 282,163 | 283 |
+| First cycle: `lite_init` with the checksum, then one decision | 282,167 | 283 |
 | Each later decision (clock, elevation, event, sleep) | at most 7,190 | 8 |
 | Whole run, 59 decisions over about 9.7 hours of spacecraft time | 694,881 | |
 

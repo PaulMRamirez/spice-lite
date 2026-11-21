@@ -209,10 +209,8 @@ const tables = { full: tableOf(full.rows), flight: tableOf(flight.rows), crc: cr
 
 // 5. Time conversion against the number of TIME pieces. lite_host2et finds its
 // piece by binary search, so its cost follows the number of probes, which is at
-// most 15 for the largest table a 1 MiB blob can hold. Tables of up to 4,096
-// pieces (13 probes) are held to the time ceiling; the largest possible table
-// is measured and reported but not held, because it sits right at the ceiling
-// and compiler builds differ by a few percent. This block is self-contained: it
+// most 13 for the 4,096 entries the format allows. Every table is held to the
+// time ceiling, the largest allowed one included. This block is self-contained: it
 // has its own runner because some of its readings are meant to be out of
 // coverage, and it adds its results to the objects above instead of changing
 // how they are built.
@@ -233,17 +231,15 @@ const tables = { full: tableOf(full.rows), flight: tableOf(flight.rows), crc: cr
   const synthetic = (n) => [{ base: 2, hostStart: 0, etStart: 0, rate: 1 },
     ...Array.from({ length: n - 2 }, (_, i) => ({ base: 3, hostStart: 1000 + 100 * i, etStart: 5e7 + 100 * i, rate: 1 + 1e-9 * (i % 7) })),
     { base: 5, hostStart: 0, etStart: 0, rate: 1 }];
-  const largest = Math.floor(((1 << 20) - ((carrier.length + 7) & ~7)) / 32);
   const blobs = [
     ['sun-earth-moon (committed)', new Uint8Array(readFileSync(smallPath))],
     ['sclk-drift (committed; the synthetic drifting clock to a microsecond)', carrier],
     ['the first 26 clock pieces of sclk-many (30 days to 0.1 microseconds)', withTimeTable(carrier, clock.slice(0, 26), { fixCrc: false })],
     ['sclk-many (committed; 203 clock pieces and three of other bases)', many],
     ['synthetic table of 256 pieces (the slicer\'s default limit for one clock)', withTimeTable(carrier, synthetic(256), { fixCrc: false })],
-    ['synthetic table of 4,096 pieces', withTimeTable(carrier, synthetic(4096), { fixCrc: false })],
-    [`synthetic table of ${fmt(largest)} pieces (the most a 1 MiB blob holds)`, withTimeTable(carrier, synthetic(largest), { fixCrc: false })],
+    ['synthetic table of 4,096 pieces (the most the format allows)', withTimeTable(carrier, synthetic(4096), { fixCrc: false })],
   ];
-  const timeHeldTo = 4096; // pieces; larger tables are reported, not held
+  const timeHeldTo = 4096; // pieces: the format's cap, so every table is held
   const timeRows = [];
   for (const [k, [label, bytes]] of blobs.entries()) {
     const table = readTimeTable(bytes);

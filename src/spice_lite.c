@@ -34,6 +34,7 @@
 #define HEADER_SIZE 64u
 #define DIR_ENTRY 16u
 #define TIME_ENTRY 32u
+#define TIME_MAX 4096u /* most TIME entries a blob may hold; bounds the search */
 #define BODY_ENTRY 32u
 #define EPHEM_ENTRY 48u
 #define ORIENT_ENTRY 64u
@@ -690,7 +691,11 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
     }
     /* TIME: finite numbers, and entries in strictly ascending order of time
      * base, then host_start, which is what lets lite_host2et search. Two
-     * pieces of one base with the same start are refused with the rest. */
+     * pieces of one base with the same start are refused with the rest. The
+     * count is capped so that the search has a fixed worst case. */
+    if (G.sec[SEC_TIME].count > TIME_MAX) {
+        return 0;
+    }
     for (i = 0; i < G.sec[SEC_TIME].count; i++) {
         const uint8_t *e = b + G.sec[SEC_TIME].off + i * TIME_ENTRY;
         if (!finite64(rdf64(e + 8)) || !finite64(rdf64(e + 16)) || !finite64(rdf64(e + 24))) {
