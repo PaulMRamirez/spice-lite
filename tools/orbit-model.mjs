@@ -12,13 +12,40 @@
 
 export const RECORD_BYTES = 104;
 export const E_MAX = 0.9;
-export const KEPLER_ITERATIONS = 12;
+export const KEPLER_ITERATIONS = 6;
 export const RECORD_FIELDS = [
   'a', 'ex', 'ey', 'inc', 'node', 'lam', 'lamRate',
   'aRate', 'exRate', 'eyRate', 'incRate', 'nodeRate', 'lamQuad',
   'cuc', 'cus', 'crc', 'crs', 'cic', 'cis',
 ];
 const NP = RECORD_FIELDS.length;
+
+// Kepler's equation in the offset G = F - lam, G = ka cos G + kb sin G, by the
+// fourth-order steps of kepler_offset in src/spice_lite.c (same operations in
+// the same order, with Math.sin and Math.cos in place of the library's own).
+// Returns the sine and cosine of G and the number of steps, or null where the
+// library gives up.
+export function keplerOffset(ka, kb) {
+  let g = 0, s = 0, c = 1, f2 = ka, f3 = kb;
+  for (let it = 1; it <= KEPLER_ITERATIONS; it++) {
+    const f = g - f2;
+    const f1 = 1 - f3;
+    let d = f / f1;
+    d = f / (f1 - 0.5 * d * f2);
+    d = f / (f1 - 0.5 * d * f2 + d * d * f3 * (1 / 6));
+    g -= d;
+    if (Math.abs(d) <= 1e-4) {
+      const h = 0.5 * d * d;
+      const t = d * (1 - h * (1 / 3));
+      return { sg: s * (1 - h) - c * t, cg: c * (1 - h) + s * t, steps: it };
+    }
+    if (!(Math.abs(g) <= 1e6)) return null;
+    s = Math.sin(g); c = Math.cos(g);
+    f2 = ka * c + kb * s;
+    f3 = kb * c - ka * s;
+  }
+  return null;
+}
 
 // State (km, km/s) at tau seconds from the record's mid epoch, or null where the
 // flight library answers unsupported. Same operations in the same order as
@@ -35,20 +62,9 @@ export function orbitEval(p, tau) {
   const e2 = ex * ex + ey * ey;
   if (!(a > 0) || !Number.isFinite(a) || !(e2 <= E_MAX * E_MAX) || !(Math.abs(lam) <= 1e6)) return null;
   const sl = Math.sin(lam), cl = Math.cos(lam);
-  // Kepler's equation in the offset G = F - lam: G = A cos G + B sin G.
-  const A = ex * sl - ey * cl, B = ex * cl + ey * sl;
-  let G = 0, sg = 0, cg = 1, done = false;
-  for (let it = 0; it < KEPLER_ITERATIONS && !done; it++) {
-    const d = (G - (A * cg + B * sg)) / (1 + (A * sg - B * cg));
-    G -= d;
-    if (Math.abs(d) <= 1e-8) {
-      [sg, cg] = [sg - cg * d, cg + sg * d];
-      done = true;
-    } else {
-      sg = Math.sin(G); cg = Math.cos(G);
-    }
-  }
-  if (!done) return null;
+  const k = keplerOffset(ex * sl - ey * cl, ex * cl + ey * sl);
+  if (!k) return null;
+  const { sg, cg } = k;
   const sf = sl * cg + cl * sg, cf = cl * cg - sl * sg;
   const rho = 1 - (ex * cf + ey * sf);
   const fDot = (lamDot + (p[8] * sf - p[9] * cf)) / rho;

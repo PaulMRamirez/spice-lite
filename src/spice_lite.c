@@ -53,7 +53,7 @@
  * eccentricity it accepts (0.9 squared), and the cap on Kepler iterations. */
 #define ORBIT_REC 104u
 #define ORBIT_E2_MAX 0.81
-#define ORBIT_KEPLER_MAX 12
+#define ORBIT_KEPLER_MAX 6
 
 typedef struct {
     uint32_t off;
@@ -834,11 +834,64 @@ static int grid_locate(double t, double t0, double dt, uint32_t count, uint32_t 
  * from zero by those checks, and the Kepler loop is capped. */
 static int sincos_near(double x, double *s, double *c)
 {
-    if (lite_fabs(x) <= 0.78) { /* inside the kernel's range: no reduction */
+    double ax = lite_fabs(x);
+    if (ax <= 0.78) { /* inside the kernel's range: no reduction */
         sincos_kernel(x, s, c);
         return 0;
     }
+    if (ax <= 1.56) { /* half the angle is inside it: double the angle */
+        double hs, hc;
+        sincos_kernel(0.5 * x, &hs, &hc);
+        *s = 2.0 * hs * hc;
+        *c = 1.0 - 2.0 * hs * hs;
+        return 0;
+    }
     return lite_sincos(x, s, c);
+}
+
+/* Kepler's equation for kind 4. With ka = ex sin lam - ey cos lam and
+ * kb = ex cos lam + ey sin lam, the offset G = F - lam of the eccentric
+ * argument of latitude from the mean one is the root of
+ * f(G) = G - ka cos G - kb sin G, and |G| is at most the eccentricity. The
+ * higher derivatives of f come free with it (the second is
+ * ka cos G + kb sin G = G - f, and the third is kb cos G - ka sin G, which is
+ * one minus the first), so each step is the fourth-order one of Danby (1987):
+ * a Newton step, refined by Halley's formula, refined once more with the third
+ * derivative. The first step starts at G = 0, where the sine and cosine are
+ * known, and costs no trigonometry. A step of at most 1e-4 radians is the
+ * last: at fourth order what it leaves is below rounding, and so small a step
+ * turns the sine and cosine by a third-order series without another
+ * evaluation. Writes sin G and cos G and returns the number of steps taken, or
+ * 0 if the cap is reached or an iterate leaves the range of the trigonometry
+ * (which a record within the eccentricity limit does not do: three steps is
+ * the most a scan of the whole accepted range finds; see
+ * docs/orbit-segment.md). */
+static int kepler_offset(double ka, double kb, double *sg, double *cg)
+{
+    double g = 0.0, s = 0.0, c = 1.0;
+    double f2 = ka, f3 = kb; /* the second and third derivatives at G = 0 */
+    int it;
+    for (it = 1; it <= ORBIT_KEPLER_MAX; it++) {
+        double f = g - f2;
+        double f1 = 1.0 - f3;
+        double d = f / f1;
+        d = f / (f1 - 0.5 * d * f2);
+        d = f / (f1 - 0.5 * d * f2 + d * d * f3 * (1.0 / 6.0));
+        g -= d;
+        if (lite_fabs(d) <= 1.0e-4) {
+            double h = 0.5 * d * d;
+            double t = d * (1.0 - h * (1.0 / 3.0));
+            *sg = s * (1.0 - h) - c * t;
+            *cg = c * (1.0 - h) + s * t;
+            return it;
+        }
+        if (sincos_near(g, &s, &c)) {
+            return 0;
+        }
+        f2 = ka * c + kb * s;
+        f3 = kb * c - ka * s;
+    }
+    return 0;
 }
 
 static int eval_orbit(const uint8_t *p, double tau, double *s)
@@ -856,38 +909,19 @@ static int eval_orbit(const uint8_t *p, double tau, double *s)
     double lam = rdf64(p + 40) + (lam1 + lam2 * tau) * tau;
     double lam_dot = lam1 + 2.0 * lam2 * tau;
     double e2 = ex * ex + ey * ey;
-    double sl, cl, ka, kb, g = 0.0, sg = 0.0, cg = 1.0, d;
+    double sl, cl, sg, cg;
     double sf, cf, rho, f_dot, w, beta, beta_dot, dd, dd_dot;
     double xn, yn, xn_dot, yn_dot, r, r_dot, cu, su, u_dot, c2, s2, two_u;
     double du, dr, di, uc_dot, rc_dot, ic_dot, sd, cd, cuc2, suc2, rc;
     double xp, yp, xp_dot, yp_dot, si, ci, so, co, x, y;
-    int it, done = 0;
     if (!(a > 0.0) || !finite64(a) || !(e2 <= ORBIT_E2_MAX)) {
         return LITE_UNSUPPORTED;
     }
     if (lite_sincos(lam, &sl, &cl)) {
         return LITE_UNSUPPORTED;
     }
-    /* Kepler's equation, F - ex sin F + ey cos F = lam, solved by Newton steps
-     * for the offset G = F - lam, which satisfies G = ka cos G + kb sin G. A
-     * step under 1e-8 is the last: the iteration converges quadratically, so
-     * the error left is below rounding, and so small a step turns the sine and
-     * cosine to first order without another evaluation. */
-    ka = ex * sl - ey * cl;
-    kb = ex * cl + ey * sl;
-    for (it = 0; it < ORBIT_KEPLER_MAX && !done; it++) {
-        d = (g - (ka * cg + kb * sg)) / (1.0 + (ka * sg - kb * cg));
-        g -= d;
-        if (lite_fabs(d) <= 1.0e-8) {
-            double sg0 = sg;
-            sg = sg - cg * d;
-            cg = cg + sg0 * d;
-            done = 1;
-        } else if (sincos_near(g, &sg, &cg)) {
-            return LITE_UNSUPPORTED;
-        }
-    }
-    if (!done) {
+    /* Kepler's equation, F - ex sin F + ey cos F = lam, for the offset F - lam */
+    if (!kepler_offset(ex * sl - ey * cl, ex * cl + ey * sl, &sg, &cg)) {
         return LITE_UNSUPPORTED;
     }
     sf = sl * cg + cl * sg;

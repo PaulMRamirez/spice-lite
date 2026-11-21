@@ -101,7 +101,7 @@ paths.forEach(([, label, ceiling], k) => {
   const counts = out.map((l) => l.instructions);
   const row = { label: 'lite_state, one kind 4 segment with the eccentricity forced to the limit of 0.9 (cost only)', min: Math.min(...counts), max: Math.max(...counts), mean: Math.round(counts.reduce((s, v) => s + v, 0) / counts.length) };
   rows.push(row);
-  if (row.max > 3500) failures.push(`${row.label}: ${row.max} instructions, ceiling 3500`);
+  if (row.max > 2500) failures.push(`${row.label}: ${row.max} instructions, ceiling 2500`);
 }
 writeFileSync(resolve(root, 'build/cost-orbit.json'), JSON.stringify({ spacewasm: '0.8.0-rc.3', moduleBytes: readFileSync(wasm).length, rows }, null, 2) + '\n');
 console.log(`module ${fmt(readFileSync(wasm).length)} bytes; ${N} times per orbiter`);
