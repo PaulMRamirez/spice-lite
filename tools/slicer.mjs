@@ -328,10 +328,8 @@ async function sliceOrient(spice, spec, window) {
 export async function slice(config, kernelDir, configDir = kernelDir) {
   const spice = await createSpiceEngine();
   const kernels = [];
-  const kernelBytes = [];
   for (const k of config.kernels) {
     const bytes = new Uint8Array(readFileSync(resolve(/^\.\.?\//.test(k) ? configDir : kernelDir, k)));
-    kernelBytes.push(bytes);
     await spice.furnsh(basename(k), bytes);
     kernels.push({ name: basename(k), sha256: createHash('sha256').update(bytes).digest('hex') });
   }
@@ -384,7 +382,7 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
   const timeFit = [];
   for (const t of config.time ?? []) {
     if (t.sclk !== undefined) {
-      const derived = await sclkTimePieces(spice, kernelBytes, t, window);
+      const derived = await sclkTimePieces(spice, t, window);
       pieces.push(...derived.pieces);
       timeFit.push(derived.fit);
     } else {

@@ -21,7 +21,7 @@
     "verify": "pnpm build:wasm && pnpm build:native && pnpm test"
   },
   "devDependencies": {
-    "cspice-wasm": "github:PaulMRamirez/cspice-wasm#e9915d7af7a0d7ac4a4f30d95765033c80c68eb8"
+    "cspice-wasm": "github:PaulMRamirez/cspice-wasm#3a9486a9488d849e169fd0e1ba917732dc2b8970"
   },
   "pnpm": { "onlyBuiltDependencies": ["cspice-wasm"] },
   "packageManager": "pnpm@9.15.0"

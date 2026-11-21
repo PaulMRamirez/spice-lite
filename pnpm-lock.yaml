@@ -9,16 +9,16 @@ importers:
   .:
     devDependencies:
       cspice-wasm:
-        specifier: github:PaulMRamirez/cspice-wasm#e9915d7af7a0d7ac4a4f30d95765033c80c68eb8
-        version: https://codeload.github.com/PaulMRamirez/cspice-wasm/tar.gz/e9915d7af7a0d7ac4a4f30d95765033c80c68eb8
+        specifier: github:PaulMRamirez/cspice-wasm#3a9486a9488d849e169fd0e1ba917732dc2b8970
+        version: https://codeload.github.com/PaulMRamirez/cspice-wasm/tar.gz/3a9486a9488d849e169fd0e1ba917732dc2b8970
 
 packages:
 
-  cspice-wasm@https://codeload.github.com/PaulMRamirez/cspice-wasm/tar.gz/e9915d7af7a0d7ac4a4f30d95765033c80c68eb8:
-    resolution: {tarball: https://codeload.github.com/PaulMRamirez/cspice-wasm/tar.gz/e9915d7af7a0d7ac4a4f30d95765033c80c68eb8}
+  cspice-wasm@https://codeload.github.com/PaulMRamirez/cspice-wasm/tar.gz/3a9486a9488d849e169fd0e1ba917732dc2b8970:
+    resolution: {tarball: https://codeload.github.com/PaulMRamirez/cspice-wasm/tar.gz/3a9486a9488d849e169fd0e1ba917732dc2b8970}
     version: 0.1.0
     engines: {node: '>=22'}
 
 snapshots:
 
-  cspice-wasm@https://codeload.github.com/PaulMRamirez/cspice-wasm/tar.gz/e9915d7af7a0d7ac4a4f30d95765033c80c68eb8: {}
+  cspice-wasm@https://codeload.github.com/PaulMRamirez/cspice-wasm/tar.gz/3a9486a9488d849e169fd0e1ba917732dc2b8970: {}
