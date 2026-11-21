@@ -234,23 +234,23 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 
 | Quantity | Target | Measured |
 | --- | --- | --- |
-| Module size | under 24 KiB | 13,620 bytes (14,882 with the CI runner's clang 18 build) |
+| Module size | under 24 KiB | 14,695 bytes with the default checksum table (13,620 with the smallest, 17,712 with the largest) |
 | Host imports | none | none |
-| Declared memory | one 64 KiB page | one page |
-| SpaceWasm compiled IR | under 64 KiB | 11,454 words (22,908 bytes) in 45 code pages |
-| SpaceWasm heap for the load | fits flight defaults | 24,770 bytes in 4 of 16 pages of 8,192 bytes |
+| Declared memory | one 64 KiB page | one page; with a 13 KB Sun, Earth, Moon blob, 45,944 bytes of it stay free |
+| SpaceWasm compiled IR | under 64 KiB | 23,120 bytes |
+| SpaceWasm heap for the load | fits flight defaults | 25,282 bytes in 4 of 16 pages of 8,192 bytes |
 | Time conversion | under 500 instructions | 106 (163 from serialized F Prime time) |
 | Geometric state, one segment | under 2,500 instructions | 1,711 to 1,982 |
 | Geometric state, up to three segments | under 6,000 instructions | 3,495 (two), 4,601 (three) |
 | State with light time and stellar aberration | under 15,000 instructions | 6,531 to 9,627 |
 | Orientation | none set | 1,170 |
 | Site view | none set | 6,161 |
-| `lite_init`, checksum skipped | none set | 2,938 |
-| `lite_init`, checksum verified | none set | 34 instructions per blob byte: 3,056,985 for the 90 KB test blob |
+| `lite_init`, checksum skipped | none set | 2,278 to 2,938 |
+| `lite_init`, checksum verified | none set | 20.8 instructions per blob byte with the default table: 275,040 for a 13 KB blob, 1,866,810 for the 90 KB one |
 
-The size and heap figures come from `spacewasm validate` (spacewasm_tools 0.8.0-rc.3) with its default flight settings, under which the module loads. They were taken on the 13,620-byte build; the size differs between clang 18 builds while the answers do not. The instruction counts come from `scripts/measure-cost.mjs`, which runs the module in the SpaceWasm interpreter one instruction of fuel at a time; `docs/cost-measurements.md` has the full table and the method. An instruction here is a SpaceWasm IR instruction, the unit its fuel counts, and one F Prime WasmSequencer slice is 1,000 of them by default.
+The heap figure comes from `spacewasm validate` (spacewasm_tools 0.8.0-rc.3) with its default flight settings, under which the module loads. Sizes are from the author's clang 18 build; the CI runner's clang 18 build is larger by several percent while the answers are identical. The instruction counts come from `scripts/measure-cost.mjs`, which runs the module in the SpaceWasm interpreter one instruction of fuel at a time; `docs/cost-measurements.md` has the full table and the method. An instruction here is a SpaceWasm IR instruction, the unit its fuel counts, and one F Prime WasmSequencer slice is 1,000 of them by default.
 
-Two targets from the first draft of this document were missed and are restated above as measured ceilings. A geometric state was budgeted at 3,000 instructions; that holds for one segment but not for two or three, because each segment on the path costs about 1,700 to 2,000. For comparison, full CSPICE as a guest takes 31,660 instructions for a geometric state and 81,606 with light time and stellar aberration, so this library is about 7 and 12 times cheaper on the same question (Sun and Earth). The checksum is the expensive call: verifying it costs about a thousand slices per 30 KB of blob.
+Two targets from the first draft of this document were missed and are restated above as measured ceilings. A geometric state was budgeted at 3,000 instructions; that holds for one segment but not for two or three, because each segment on the path costs about 1,700 to 2,000. For comparison, full CSPICE as a guest takes 31,660 instructions for a geometric state and 81,606 with light time and stellar aberration, so this library is about 7 and 12 times cheaper on the same question (Sun and Earth). The checksum is the expensive call. `LITE_CRC_TABLES` trades table space for speed (34, 20.8, or 13.8 instructions per byte for 64 bytes, 1 KiB, or 4 KiB of table); with the default, verifying a 13 KB blob takes 276 slices.
 
 Blob sizes, measured from the test blob (30 days in mid 2004, source DE440):
 
@@ -267,7 +267,7 @@ Blob sizes, measured from the test blob (30 days in mid 2004, source DE440):
 
 Three consequences:
 
-- **Natural bodies are cheap.** A month of Sun, Earth, and Moon geometry with orientation is under 12 KiB at sub-millimeter fit error.
+- **Natural bodies are cheap.** A month of Sun, Earth, and Moon geometry with orientation and two sites is a 13,160-byte blob (`test/blobs/sun-earth-moon.slb`) at sub-millimeter fit error, and it fits beside the library in the module's single page.
 - **Spacecraft trajectories are not.** Two days at ten-minute records is 76 KiB, and a month would be over 1 MiB. Predicted segments suit short windows or slow trajectories; the supplied state exists for everything else.
 - **A compact orbit model is the likely next segment kind.** Conic elements with secular rates, like SPK type 15, would cover long arcs in tens of bytes.
 
@@ -302,7 +302,7 @@ The slicer is not trusted to grade itself. It writes its fit errors into the blo
 2. **Stellar aberration in 0.1.** It is implemented. Whether its dependence on observer velocity accuracy makes it worth keeping for spacecraft observers is open.
 3. **Host time bases.** The TIME section assumes one linear map per time base. Spacecraft clock partitions or resets may need more, and the slicer does not yet derive the pieces from an SCLK kernel.
 4. **Compact orbit segment.** Which model, and how its error is bounded.
-5. **Checksum.** CRC-32 is the draft choice. Measured at 34 interpreter instructions per byte, it dominates start-up: 3,057 slices for the 90 KB test blob, against 3 with the check skipped. A byte-wide table would roughly halve that at the cost of 1 KiB of data; the alternative is to rely on uplink integrity and skip it.
+5. **Checksum.** CRC-32 is the draft choice and it dominates start-up: 20.8 interpreter instructions per byte with the default 1 KiB table, against two to three thousand instructions in total with the check skipped. A Fletcher-style sum over 32-bit words measured at 5.8 instructions per byte with no table, but detects fewer error patterns and would change the format. Whether to keep CRC-32, switch, or rely on uplink integrity is open.
 6. **Real memory configuration.** The one-page target assumes a mission will grant a sequence 64 KiB.
 7. **Geodetic sites, sub-points, and occultation.** Declared, not implemented.
 8. **Where the slicer lives.** It is in this repository for now; it may move to cspice-wasm.

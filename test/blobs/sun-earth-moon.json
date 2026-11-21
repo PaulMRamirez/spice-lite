@@ -1,0 +1,25 @@
+{
+  "name": "sun-earth-moon",
+  "comment": "A flight-shaped blob: Sun, Earth, and Moon for 30 days with orientation and two sites, rooted at the solar system barycenter. Small enough to sit beside the library in one 64 KiB page.",
+  "kernels": ["naif0012.tls", "pck00011.tpc", "de440s-inner-cassini.bsp"],
+  "window": { "start": "2004-06-27T00:00:00", "stop": "2004-07-27T00:00:00" },
+  "created": "2004-06-26T00:00:00",
+  "bodies": [
+    { "id": 0, "parent": null },
+    { "id": 3, "parent": 0, "interval": 1382400, "degree": 12 },
+    { "id": 10, "parent": 0, "interval": 1382400, "degree": 10, "radiiFrom": "SUN" },
+    { "id": 301, "parent": 3, "interval": 345600, "degree": 12, "radiiFrom": "MOON" },
+    { "id": 399, "parent": 3, "interval": 345600, "degree": 12, "radiiFrom": "EARTH" }
+  ],
+  "orient": [
+    { "body": 301, "frame": "IAU_MOON", "interval": 86400, "degree": 6 },
+    { "body": 399, "frame": "IAU_EARTH", "interval": 864000, "degree": 3 }
+  ],
+  "sites": [
+    { "id": 1, "body": 301, "lonDeg": 23.47, "latDeg": 0.67 },
+    { "id": 2, "body": 399, "lonDeg": -116.89, "latDeg": 35.43 }
+  ],
+  "time": [
+    { "base": 3, "hostStart": 0, "etOffset": 0, "rate": 1.0 }
+  ]
+}

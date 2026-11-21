@@ -1,0 +1,137 @@
+{
+  "slicer": "0.1.0",
+  "name": "sun-earth-moon",
+  "window": {
+    "start": "2004-06-27T00:00:00",
+    "stop": "2004-07-27T00:00:00"
+  },
+  "windowEt": [
+    141566464.1842146,
+    144158464.1833889
+  ],
+  "kernels": [
+    {
+      "name": "naif0012.tls",
+      "sha256": "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b"
+    },
+    {
+      "name": "pck00011.tpc",
+      "sha256": "3dff7b1dbeceaa01f25467767d3fa25816051c85d162d1edf04acb310ee28bb1"
+    },
+    {
+      "name": "de440s-inner-cassini.bsp",
+      "sha256": "44d52cff8b9a1cabdaeb38c5b94aedbc520176b10989a49c379b7245625df1ca"
+    }
+  ],
+  "ephem": [
+    {
+      "target": 3,
+      "center": 0,
+      "kind": 1,
+      "source": 0,
+      "degree": 12,
+      "recordCount": 2,
+      "tStart": 141566464.1842146,
+      "interval": 1382400,
+      "maxPosErr": 6.647738524882304e-7,
+      "maxVelErr": 8.25453302742056e-11,
+      "bytes": 624
+    },
+    {
+      "target": 10,
+      "center": 0,
+      "kind": 1,
+      "source": 0,
+      "degree": 10,
+      "recordCount": 2,
+      "tStart": 141566464.1842146,
+      "interval": 1382400,
+      "maxPosErr": 2.856795587963514e-8,
+      "maxVelErr": 4.4945045816800155e-12,
+      "bytes": 528
+    },
+    {
+      "target": 301,
+      "center": 3,
+      "kind": 1,
+      "source": 0,
+      "degree": 12,
+      "recordCount": 8,
+      "tStart": 141566464.1842146,
+      "interval": 345600,
+      "maxPosErr": 1.6977382667957305e-7,
+      "maxVelErr": 5.5291445711610205e-11,
+      "bytes": 2496
+    },
+    {
+      "target": 399,
+      "center": 3,
+      "kind": 1,
+      "source": 0,
+      "degree": 12,
+      "recordCount": 8,
+      "tStart": 141566464.1842146,
+      "interval": 345600,
+      "maxPosErr": 2.0897654751698923e-9,
+      "maxVelErr": 6.800301531156231e-13,
+      "bytes": 2496
+    }
+  ],
+  "orient": [
+    {
+      "body": 301,
+      "degree": 6,
+      "recordCount": 30,
+      "tStart": 141566464.1842146,
+      "interval": 86400,
+      "w0": 0.5264023305574029,
+      "wRate": 0.000002660796980424777,
+      "maxErr": 1.5227989786929084e-13,
+      "bytes": 5040
+    },
+    {
+      "body": 399,
+      "degree": 3,
+      "recordCount": 3,
+      "tStart": 141566464.1842146,
+      "interval": 864000,
+      "w0": -3.048055726159213,
+      "wRate": 0.00007292115373193964,
+      "maxErr": 3.5132143382002752e-12,
+      "bytes": 288
+    }
+  ],
+  "sites": [
+    {
+      "id": 1,
+      "body": 301,
+      "position": [
+        1593.5537373704333,
+        691.9049782096904,
+        20.3161817616665
+      ]
+    },
+    {
+      "id": 2,
+      "body": 399,
+      "position": [
+        -2350.5219055154175,
+        -4635.136614724073,
+        3697.4561285829996
+      ]
+    }
+  ],
+  "time": [
+    {
+      "base": 3,
+      "hostStart": 0,
+      "etStart": 141566464.1842146,
+      "rate": 1
+    }
+  ],
+  "bytes": 13160,
+  "coverageEt": [
+    141566464.1842146,
+    144158464.1833889
+  ]
+}
