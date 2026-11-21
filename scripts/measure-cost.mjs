@@ -140,12 +140,88 @@ const geometryRows = [...geoEcl.rows, ...geoSoi.rows].filter((r) => /sub_point|o
 const result = { spacewasm: '0.8.0-rc.3', full, flight, pageUse, crc: crcRows, budgets, geometry: geometryRows };
 writeFileSync(resolve(root, 'build/cost.json'), JSON.stringify(result, null, 2) + '\n');
 const tables = { full: tableOf(full.rows), flight: tableOf(flight.rows), crc: crcTable, geometry: tableOf(geometryRows) };
+
+// 5. Time conversion against the number of TIME pieces. lite_host2et finds its
+// piece by binary search, so its cost follows the number of probes, which is at
+// most 15 for the largest table a 1 MiB blob can hold. Tables of up to 4,096
+// pieces (13 probes) are held to the time ceiling; the largest possible table
+// is measured and reported but not held, because it sits right at the ceiling
+// and compiler builds differ by a few percent. This block is self-contained: it
+// has its own runner because some of its readings are meant to be out of
+// coverage, and it adds its results to the objects above instead of changing
+// how they are built.
+{
+  const { readTimeTable, withTimeTable } = await import('../test/time-table.mjs');
+  const split = (host) => { const u = Math.round(host * 1e6); return [Math.floor(u / 1e6), u % 1e6]; };
+  // A module variant with room for a blob of the largest size the format allows.
+  const bigWasm = resolve(root, 'build/spice_lite.bench-time.wasm');
+  run('bash', [resolve(root, 'scripts/build-wasm.sh')], { env: { ...process.env, WASM_OUT: bigWasm, WASM_INITIAL_MEMORY: String(20 * 65536) } });
+  const { exports: bx } = await WebAssembly.instantiate(await WebAssembly.compile(readFileSync(bigWasm)), {});
+  const bigBase = (bx.__heap_base.value + 7) & ~7;
+  const carrier = new Uint8Array(readFileSync(resolve(root, 'test/blobs/sclk-drift.slb')));
+  const many = new Uint8Array(readFileSync(resolve(root, 'test/blobs/sclk-many.slb')));
+  const clock = readTimeTable(many).filter((t) => t.base === 3);
+  // Synthetic tables: n pieces of base 3, one every 100 host seconds, with a
+  // piece of base 2 before them and one of base 5 after, so the search also has
+  // to stop at the edges of a base.
+  const synthetic = (n) => [{ base: 2, hostStart: 0, etStart: 0, rate: 1 },
+    ...Array.from({ length: n - 2 }, (_, i) => ({ base: 3, hostStart: 1000 + 100 * i, etStart: 5e7 + 100 * i, rate: 1 + 1e-9 * (i % 7) })),
+    { base: 5, hostStart: 0, etStart: 0, rate: 1 }];
+  const largest = Math.floor(((1 << 20) - ((carrier.length + 7) & ~7)) / 32);
+  const blobs = [
+    ['sun-earth-moon (committed)', new Uint8Array(readFileSync(smallPath))],
+    ['sclk-drift (committed; the synthetic drifting clock to a microsecond)', carrier],
+    ['the first 26 clock pieces of sclk-many (30 days to 0.1 microseconds)', withTimeTable(carrier, clock.slice(0, 26), { fixCrc: false })],
+    ['sclk-many (committed; 203 clock pieces and three of other bases)', many],
+    ['synthetic table of 256 pieces (the slicer\'s default limit for one clock)', withTimeTable(carrier, synthetic(256), { fixCrc: false })],
+    ['synthetic table of 4,096 pieces', withTimeTable(carrier, synthetic(4096), { fixCrc: false })],
+    [`synthetic table of ${fmt(largest)} pieces (the most a 1 MiB blob holds)`, withTimeTable(carrier, synthetic(largest), { fixCrc: false })],
+  ];
+  const timeHeldTo = 4096; // pieces; larger tables are reported, not held
+  const timeRows = [];
+  for (const [k, [label, bytes]] of blobs.entries()) {
+    const table = readTimeTable(bytes);
+    // Readings: every piece's first reading and the reading a microsecond
+    // before it (a sample of 256 pieces when there are more), a reading far past
+    // the last piece of each base, and a time base the blob does not have.
+    const step = Math.max(1, Math.floor(table.length / 256));
+    const picked = table.filter((_, i) => i % step === 0 || i === table.length - 1);
+    const queries = ['init 1'];
+    for (const t of picked) {
+      const [sec, usec] = split(t.hostStart);
+      queries.push(`host2et ${t.base} ${sec} ${usec}`);
+      const before = sec * 1e6 + usec - 1;
+      if (before >= 0) queries.push(`host2et ${t.base} ${Math.floor(before / 1e6)} ${before % 1e6}`);
+    }
+    for (const base of new Set(table.map((t) => t.base))) queries.push(`host2et ${base} 4294967295 999999`);
+    queries.push('host2et 9 1000 0', 'host2et 0 1000 0');
+    const bp = resolve(root, `build/cost.time-${k}.slb`), qp = resolve(root, `build/cost.time-${k}.queries`);
+    writeFileSync(bp, bytes);
+    writeFileSync(qp, queries.join('\n') + '\n');
+    const out = run(hostBin, ['--module', bigWasm, '--blob', bp, '--base', String(bigBase), '--queries', qp]).trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.query);
+    if (out[0].status !== 0) { failures.push(`time: ${label}: lite_init status ${out[0].status}`); continue; }
+    const calls = out.slice(1);
+    // Only "converted" and "out of coverage" are expected of these readings.
+    if (calls.some((l) => l.status !== 0 && l.status !== 1)) failures.push(`time: ${label}: an unexpected status`);
+    const counts = calls.map((l) => l.instructions);
+    const row = { label, pieces: table.length, readings: calls.length, converted: calls.filter((l) => l.status === 0).length, fewest: Math.min(...counts), most: Math.max(...counts), held: table.length <= timeHeldTo };
+    if (row.held && row.most > budgets.time) failures.push(`lite_host2et with ${row.pieces} TIME pieces (${label}): ${row.most} instructions, ceiling ${budgets.time}`);
+    timeRows.push(row);
+  }
+  result.time = timeRows;
+  writeFileSync(resolve(root, 'build/cost.json'), JSON.stringify(result, null, 2) + '\n');
+  if (!timeRows.some((r) => r.held && r.pieces >= 200)) failures.push('time: no table of 200 or more pieces was measured against the ceiling');
+  tables.time = ['| TIME pieces | Blob | Readings | Fewest instructions | Most instructions | Held to 500 |', '| --- | --- | --- | --- | --- | --- |',
+    ...timeRows.map((r) => `| ${fmt(r.pieces)} | ${r.label} | ${fmt(r.readings)} | ${fmt(r.fewest)} | ${fmt(r.most)} | ${r.held ? 'yes' : 'no'} |`)].join('\n');
+}
+
 console.log(`module ${fmt(full.load.module_bytes)} bytes, IR ${fmt(full.load.ir_bytes)} bytes, interpreter heap ${fmt(full.load.heap_bytes)} bytes, stack ${fmt(full.load.stack_words)} words`);
 console.log(tables.full + '\n');
 console.log(`one page: module data and stack end at byte ${fmt(pageUse.heapBase)}, the blob ends at ${fmt(pageUse.end)}, ${fmt(pageUse.free)} bytes free`);
 console.log(tables.flight + '\n');
 console.log(tables.crc + '\n');
 console.log(tables.geometry);
+console.log('\n' + tables.time);
 if (process.argv.includes('--update-doc')) {
   const docPath = resolve(root, 'docs/cost-measurements.md');
   let doc = readFileSync(docPath, 'utf8');

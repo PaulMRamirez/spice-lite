@@ -12,15 +12,15 @@ The counts are deterministic for a given compiler build. CI reruns the measureme
 
 ## Every call, on the large test blob
 
-The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 14,695 bytes; compiled IR 23,120 bytes.
+The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 19,059 bytes; compiled IR 30,842 bytes.
 
 <!-- full-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_init, checksum verified (90 KB blob) | 1,866,852 | 1,867 |
-| lite_init, checksum skipped | 2,980 | 3 |
-| lite_host2et | 106 | 1 |
-| lite_fwtime2et | 163 | 1 |
+| lite_init, checksum verified (90 KB blob) | 1,866,868 | 1,867 |
+| lite_init, checksum skipped | 2,996 | 3 |
+| lite_host2et | 137 | 1 |
+| lite_fwtime2et | 188 | 1 |
 | lite_state, one segment (Moon from Earth-Moon barycenter), geometric | 2,002 | 3 |
 | lite_state, two segments (Moon from Earth), geometric | 3,537 | 4 |
 | lite_state, three segments (Sun from Earth), geometric | 4,655 | 5 |
@@ -45,9 +45,9 @@ The shipped module declares a single 64 KiB page. The `sun-earth-moon` blob (Sun
 <!-- flight-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_init, checksum verified (13 KB blob) | 275,068 | 276 |
-| lite_init, checksum skipped | 2,306 | 3 |
-| lite_host2et | 83 | 1 |
+| lite_init, checksum verified (13 KB blob) | 275,057 | 276 |
+| lite_init, checksum skipped | 2,295 | 3 |
+| lite_host2et | 110 | 1 |
 | lite_state, Moon from Earth, geometric | 3,399 | 4 |
 | lite_state, Sun from Earth, light time and stellar aberration | 6,417 | 7 |
 | lite_orient, Moon | 1,170 | 2 |
@@ -61,9 +61,9 @@ Verifying the CRC-32 is the costly part of `lite_init`, and its cost trades agai
 <!-- crc-table:start -->
 | LITE_CRC_TABLES | Table size | Module size | Instructions per blob byte | lite_init on the 13 KB blob | Slices |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 64 bytes | 17,750 bytes | 34.0 | 449,233 | 450 |
-| 1 (default) | 1,024 bytes | 18,825 bytes | 20.8 | 275,068 | 276 |
-| 4 | 4,096 bytes | 21,842 bytes | 13.8 | 183,060 | 184 |
+| 0 | 64 bytes | 17,984 bytes | 34.0 | 449,222 | 450 |
+| 1 (default) | 1,024 bytes | 19,059 bytes | 20.8 | 275,057 | 276 |
+| 4 | 4,096 bytes | 22,076 bytes | 13.8 | 183,049 | 184 |
 <!-- crc-table:end -->
 
 The default is the middle row. A larger table buys less than it would on real hardware, because under an interpreter the cost is dominated by the number of operations, not by memory traffic.
@@ -91,6 +91,39 @@ One experiment that is not in the library: replacing the CRC with running sums o
 <!-- geometry-table:end -->
 
 A sub-point is a geometric state, an orientation, and the nearest-point solution: from a supplied state, where the state costs almost nothing, the whole call is about 2,900 instructions, of which the orientation is 1,170 and the Newton iteration with its two arctangents the rest. The shape matters little: the triaxial case costs no more than the spheroid. An occultation is two geometric states (target and front body, each from the observer), three arctangents, and two square roots, so it costs about what its two states cost plus 600; evaluating the observer's own path once instead of twice would save a segment or two and has not been done.
+
+## Time conversion against the piece count
+
+`lite_host2et` finds its TIME piece by binary search over entries that the format requires sorted, so its cost follows the number of probes and not the number of pieces. Each row converts many readings on one blob (every piece's first reading and the reading a microsecond before it, a reading far past each base's last piece, and time bases the blob lacks) and gives the cheapest and the costliest; CI holds every row to the 500-instruction ceiling. The synthetic tables are written by the cost script into a copy of the `sclk-drift` blob.
+
+<!-- time-table:start -->
+| TIME pieces | Blob | Readings | Fewest instructions | Most instructions | Held to 500 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | sun-earth-moon (committed) | 4 | 79 | 110 | yes |
+| 6 | sclk-drift (committed; the synthetic drifting clock to a microsecond) | 15 | 116 | 165 | yes |
+| 26 | the first 26 clock pieces of sclk-many (30 days to 0.1 microseconds) | 55 | 170 | 221 | yes |
+| 206 | sclk-many (committed; 203 clock pieces and three of other bases) | 416 | 251 | 304 | yes |
+| 256 | synthetic table of 256 pieces (the slicer's default limit for one clock) | 515 | 278 | 318 | yes |
+| 4,096 | synthetic table of 4,096 pieces | 517 | 386 | 422 | yes |
+| 32,717 | synthetic table of 32,717 pieces (the most a 1 MiB blob holds) | 521 | 440 | 500 | no |
+<!-- time-table:end -->
+
+A conversion costs about 85 instructions plus 27 for each probe, and a table of n pieces takes at most the whole part of log2(n) plus one probes: one probe for one piece, three for six, five for 26, eight for 206, thirteen for 4,096. The spread within a row is mostly the number of probes a reading happens to need, and the cheapest readings are those of a time base the blob lacks. Tables of up to 4,096 pieces are held to the ceiling. The last row is the largest table the format allows (a blob is at most 1 MiB); its 15 probes come to exactly the ceiling with the author's build, which a build that runs a few percent higher would exceed, so it is measured and shown but not held. Capping the section would close that gap and is listed with the open questions in `SPEC.md`.
+
+Before the entries were required sorted, `lite_host2et` read every entry: 60 instructions plus 33 per piece. The same readings on the same blobs, measured with the library as it was then (the table of 32,717 pieces is sampled, as above):
+
+| TIME pieces | Scan, most instructions | Search, most instructions |
+| --- | --- | --- |
+| 1 | 83 | 110 |
+| 2 (the `cassini-soi` blob, the reading in the first table above) | 106 | 137 |
+| 6 | 248 | 165 |
+| 26 | 908 | 221 |
+| 206 | 6,791 | 304 |
+| 256 | 8,460 | 318 |
+| 4,096 | 135,180 | 422 |
+| 32,717 | 1,079,673 | 500 |
+
+The search costs more than the scan on a table of one or two pieces, by about 30 instructions, and less from about four pieces on. The scan figures are not rerun by CI; they were taken once, at the change.
 
 ## Reading the numbers
 
