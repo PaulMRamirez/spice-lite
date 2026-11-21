@@ -1,0 +1,22 @@
+# Ground-side host harness: loads the spice-lite module in NASA's SpaceWasm
+# interpreter and counts the interpreter instructions each call executes. Built
+# only by scripts/measure-cost.mjs and CI. Versions are pinned exactly and
+# Cargo.lock is committed, so the numbers in docs/cost-measurements.md are
+# reproducible.
+[package]
+name = "spice-lite-spacewasm-host"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.87"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+spacewasm = "=0.8.0-rc.3"
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+
+# Standalone: not a member of any enclosing workspace.
+[workspace]

@@ -42,6 +42,8 @@ jobs:
           node scripts/check-wasm-mvp.mjs build/spice_lite.wasm
       - name: Tests (exactness, accuracy against CSPICE, robustness)
         run: pnpm test
+      - name: Cost under SpaceWasm stays within the ceilings in SPEC.md
+        run: node scripts/measure-cost.mjs
       - name: The committed blob and vectors are reproducible
         run: |
           pnpm slice

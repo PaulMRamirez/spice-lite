@@ -239,11 +239,18 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 | Declared memory | one 64 KiB page | one page |
 | SpaceWasm compiled IR | under 64 KiB | 11,454 words (22,908 bytes) in 45 code pages |
 | SpaceWasm heap for the load | fits flight defaults | 24,770 bytes in 4 of 16 pages of 8,192 bytes |
-| State query, no correction | under 3,000 instructions | not yet measured |
-| State query, light time and stellar aberration | under 15,000 instructions | not yet measured |
-| Time conversion | under 500 instructions | not yet measured |
+| Time conversion | under 500 instructions | 106 (163 from serialized F Prime time) |
+| Geometric state, one segment | under 2,500 instructions | 1,711 to 1,982 |
+| Geometric state, up to three segments | under 6,000 instructions | 3,495 (two), 4,601 (three) |
+| State with light time and stellar aberration | under 15,000 instructions | 6,531 to 9,627 |
+| Orientation | none set | 1,170 |
+| Site view | none set | 6,161 |
+| `lite_init`, checksum skipped | none set | 2,938 |
+| `lite_init`, checksum verified | none set | 34 instructions per blob byte: 3,056,985 for the 90 KB test blob |
 
-The SpaceWasm figures come from `spacewasm validate` (spacewasm_tools 0.8.0-rc.3) with its default flight settings, under which the module loads. They were taken on the 13,620-byte build; the size differs between clang 18 builds while the answers do not. Instruction counts need a host harness that drives the exports and are the next measurement to take.
+The size and heap figures come from `spacewasm validate` (spacewasm_tools 0.8.0-rc.3) with its default flight settings, under which the module loads. They were taken on the 13,620-byte build; the size differs between clang 18 builds while the answers do not. The instruction counts come from `scripts/measure-cost.mjs`, which runs the module in the SpaceWasm interpreter one instruction of fuel at a time; `docs/cost-measurements.md` has the full table and the method. An instruction here is a SpaceWasm IR instruction, the unit its fuel counts, and one F Prime WasmSequencer slice is 1,000 of them by default.
+
+Two targets from the first draft of this document were missed and are restated above as measured ceilings. A geometric state was budgeted at 3,000 instructions; that holds for one segment but not for two or three, because each segment on the path costs about 1,700 to 2,000. For comparison, full CSPICE as a guest takes 31,660 instructions for a geometric state and 81,606 with light time and stellar aberration, so this library is about 7 and 12 times cheaper on the same question (Sun and Earth). The checksum is the expensive call: verifying it costs about a thousand slices per 30 KB of blob.
 
 Blob sizes, measured from the test blob (30 days in mid 2004, source DE440):
 
@@ -273,7 +280,7 @@ One deployment note: the F Prime WasmSequencer default gives a guest 8,192 bytes
 | A. Exactness | The same blob and queries on different hosts and builds | Results are bit-identical to the committed vectors | `test/exact.test.mjs` |
 | B. Accuracy | Each query against full CSPICE through cspice-wasm, using the kernels named in PROV | Error is within the bounds the blob declares, with a slack factor of 1.5 because the test samples different times from the slicer | `test/accuracy.test.mjs` |
 | C. Robustness | Truncated and corrupted blobs | Refused or handled with status codes; no trap, no out-of-bounds read | `test/robust.test.mjs` |
-| D. Cost | Instruction counts per call under SpaceWasm | Within the budgets above | sizes only so far |
+| D. Cost | Instruction counts per call under SpaceWasm | Within the ceilings above | `scripts/measure-cost.mjs` |
 
 The exactness vectors are text. A query file holds one call per line; the expected file holds one result line per query, with every 64-bit float written as the 16 hexadecimal digits of its bit pattern. Bits, not decimals, are what make tier A an exact comparison.
 
@@ -295,7 +302,7 @@ The slicer is not trusted to grade itself. It writes its fit errors into the blo
 2. **Stellar aberration in 0.1.** It is implemented. Whether its dependence on observer velocity accuracy makes it worth keeping for spacecraft observers is open.
 3. **Host time bases.** The TIME section assumes one linear map per time base. Spacecraft clock partitions or resets may need more, and the slicer does not yet derive the pieces from an SCLK kernel.
 4. **Compact orbit segment.** Which model, and how its error is bounded.
-5. **Checksum.** CRC-32 is the draft choice; its cost at init is not yet measured.
+5. **Checksum.** CRC-32 is the draft choice. Measured at 34 interpreter instructions per byte, it dominates start-up: 3,057 slices for the 90 KB test blob, against 3 with the check skipped. A byte-wide table would roughly halve that at the cost of 1 KiB of data; the alternative is to rely on uplink integrity and skip it.
 6. **Real memory configuration.** The one-page target assumes a mission will grant a sequence 64 KiB.
 7. **Geodetic sites, sub-points, and occultation.** Declared, not implemented.
 8. **Where the slicer lives.** It is in this repository for now; it may move to cspice-wasm.

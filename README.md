@@ -24,11 +24,11 @@ The 0.1 library provides time conversion from the host clock, states of bodies i
 
 The module is under 15 KiB of strict WebAssembly 1.0 with no imports (13,620 bytes with the author's clang 18 and 14,882 on the CI runner's; the two builds give identical answers), declares one page of memory, and loads under SpaceWasm's default flight settings (22,908 bytes of compiled IR for the smaller build). It uses no heap and no libc. The same blob and query give bit-identical results in the WebAssembly build and a native x86-64 build. Against full CSPICE, natural-body positions in the test blob agree to under a millimeter, and every answer in the accuracy tests falls within the error bounds the blob declares. 200,000 corrupted blobs run under AddressSanitizer and UndefinedBehaviorSanitizer without a fault.
 
-Instruction counts per call under SpaceWasm have not been measured yet.
+Under the SpaceWasm interpreter a geometric state costs about 1,700 to 2,000 instructions per segment on the path (two to five sequencer slices in practice), a state with light time and stellar aberration 6,500 to 9,600, and a clock conversion about 100. Full CSPICE takes 31,660 and 81,606 for the same two state queries. Verifying the blob's checksum at start-up is the costly step, at 34 instructions per byte; `docs/cost-measurements.md` has the table.
 
 ## Layout
 
-`include/spice_lite.h` and `src/spice_lite.c` are the whole flight library. `tools/slicer.mjs` is the reference slicer and `tools/make-vectors.mjs` regenerates the exactness vectors. `test/` holds the WebAssembly harness, the native driver, the test blob with its configuration and report, and the three test tiers. `scripts/` holds the two build scripts and the strict Wasm 1.0 checker.
+`include/spice_lite.h` and `src/spice_lite.c` are the whole flight library. `tools/slicer.mjs` is the reference slicer and `tools/make-vectors.mjs` regenerates the exactness vectors. `test/` holds the WebAssembly harness, the native driver, the test blob with its configuration and report, and the three test tiers. `scripts/` holds the two build scripts, the strict Wasm 1.0 checker, and the cost measurement, whose SpaceWasm host harness is in `bench/spacewasm-host`.
 
 ## Building and testing
 
