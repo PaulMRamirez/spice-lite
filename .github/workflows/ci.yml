@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-18
+      NATIVE_CC: gcc
+      SPICE_LITE_KERNELS: ${{ github.workspace }}/_kernels-src/test/fixtures
+    steps:
+      - uses: actions/checkout@v4
+      # The accuracy tier and the slicer read public kernels that are not committed
+      # here; they are the test fixtures of cspice-wasm at the commit this repo pins.
+      - uses: actions/checkout@v4
+        with:
+          repository: PaulMRamirez/cspice-wasm
+          ref: e9915d7af7a0d7ac4a4f30d95765033c80c68eb8
+          path: _kernels-src
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
+      - run: pnpm install --frozen-lockfile
+      - name: Build the WebAssembly module and the native driver
+        run: |
+          bash scripts/build-wasm.sh
+          bash scripts/build-native.sh
+          node scripts/check-wasm-mvp.mjs build/spice_lite.wasm
+      - name: Tests (exactness, accuracy against CSPICE, robustness)
+        run: pnpm test
+      - name: Cost under SpaceWasm stays within the ceilings in SPEC.md
+        run: node scripts/measure-cost.mjs
+      - name: The committed blob and vectors are reproducible
+        run: |
+          pnpm slice
+          node tools/make-vectors.mjs
+          git diff --exit-code -- test/blobs test/vectors

@@ -1,0 +1,23 @@
+{
+  "name": "spice-lite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A small, import-free C library that answers spacecraft geometry questions onboard from a compact ephemeris blob; built for WebAssembly sequencers.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/PaulMRamirez/spice-lite.git" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "build:native": "bash scripts/build-native.sh",
+    "slice": "node tools/slicer.mjs test/blobs/cassini-soi.json test/blobs/cassini-soi.slb test/blobs/cassini-soi.report.json",
+    "test": "node --test test/*.test.mjs",
+    "cost": "node scripts/measure-cost.mjs",
+    "verify": "pnpm build:wasm && pnpm build:native && pnpm test"
+  },
+  "devDependencies": {
+    "cspice-wasm": "github:PaulMRamirez/cspice-wasm#e9915d7af7a0d7ac4a4f30d95765033c80c68eb8"
+  },
+  "pnpm": { "onlyBuiltDependencies": ["cspice-wasm"] },
+  "packageManager": "pnpm@9.15.0"
+}
