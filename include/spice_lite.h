@@ -118,12 +118,17 @@ LITE_API int lite_sub_point(int32_t body, int32_t observer, double et,
 #define LITE_OCC_ANNULAR 2 /* by lies wholly inside target's disk: a transit */
 #define LITE_OCC_FULL 3    /* target lies wholly behind by */
 
-/* Whether body `by` hides body `target` as seen from observer, geometric. Each
- * body is a sphere of the mean of its three radii. code receives a LITE_OCC_
- * value; it is LITE_OCC_NONE whenever `by` is the farther of the two. Returns
- * LITE_UNSUPPORTED when either body lacks positive radii, and LITE_BAD_ARG
- * when target and by are the same body or the observer is on or inside either
- * sphere. No orientation is needed. */
+/* Whether body `by` hides body `target` as seen from observer, geometric. A
+ * body whose three radii differ is its triaxial ellipsoid, turned by its
+ * ORIENT segment at et; a body with equal radii, or with no orientation at et
+ * (no segment, or none covering et), is a sphere of the mean of its radii.
+ * With ellipsoids the classification is that of SPICE's occult_c with
+ * ELLIPSOID shapes; with the sphere stand-in for an unoriented body it can
+ * differ while the limbs are within the spread of that body's radii. code
+ * receives a LITE_OCC_ value; it is LITE_OCC_NONE whenever `by` is the farther
+ * of the two. Returns LITE_UNSUPPORTED when either body lacks positive radii,
+ * and LITE_BAD_ARG when target and by are the same body or the observer is on
+ * or inside either body as modeled. */
 LITE_API int lite_occulted(int32_t target, int32_t by, int32_t observer, double et,
                            int32_t *code);
 
