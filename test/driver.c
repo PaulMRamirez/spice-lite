@@ -136,6 +136,20 @@ static int run(const char *path)
                 put(el);
                 put(rg);
             }
+        } else if (!strcmp(tok[0], "subpoint") && n == 4) {
+            double lon = 0, lat = 0, alt = 0;
+            st = lite_sub_point(atoi(tok[1]), atoi(tok[2]), from_hex(tok[3]), &lon, &lat, &alt);
+            printf("%d", st);
+            if (st == LITE_OK) {
+                put(lon);
+                put(lat);
+                put(alt);
+            }
+        } else if (!strcmp(tok[0], "occulted") && n == 5) {
+            int32_t code = 0;
+            st = lite_occulted(atoi(tok[1]), atoi(tok[2]), atoi(tok[3]), from_hex(tok[4]), &code);
+            printf("%d", st);
+            if (st == LITE_OK) printf(" i%d", code);
         } else {
             printf("?");
         }
@@ -170,6 +184,10 @@ static void battery(double t0, double t1)
             }
             (void)lite_orient(ids[i], t, r);
             (void)lite_site_view(i, ids[i], t, 0, &az, &el, &rg);
+            for (j = 0; j < 10; j += 5) {
+                (void)lite_sub_point(ids[i], ids[(i + j + k) % 10], t, &az, &el, &rg);
+                (void)lite_occulted(ids[i], ids[(i + j + 1) % 10], ids[(j + k) % 10], t, &src);
+            }
         }
         /* the synthetic orbiters of the kind 4 test blob, at times spread
          * over more of their records */
@@ -188,6 +206,23 @@ static void battery(double t0, double t1)
         for (i = 0; i < 6; i++) s[i] = 1000.0 * (double)(i + 1);
         (void)lite_set_state(-82, ids[k], t, s, 30.0);
         (void)lite_state(-82, 399, t + 5.0, 0, s, &lt, &src);
+        for (i = 3; i < 6; i++) {
+            (void)lite_sub_point(ids[i], -82, t + 5.0, &az, &el, &rg);
+            (void)lite_occulted(ids[i], ids[i + 1], -82, t + 5.0, &src);
+        }
+        /* the geometry blob: its spacecraft (-900) placed just outside each body
+         * that has radii there, where the nearest-point iteration does its work */
+        for (i = 0; i < 4; i++) {
+            static const int32_t near[4] = {4, 301, 399, 10};
+            static const double away[4] = {15.0, 2000.0, 7000.0, 800000.0};
+            double p[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+            p[(i + k) % 3] = away[i] * (double)(k + 1);
+            p[(i + k + 1) % 3] = away[i] * 0.25 * (double)i;
+            (void)lite_set_state(-900, near[i], t, p, 30.0);
+            (void)lite_sub_point(near[i], -900, t, &az, &el, &rg);
+            (void)lite_occulted(near[(i + 1) % 4], near[i], -900, t, &src);
+            (void)lite_occulted(near[i], near[(i + 2) % 4], -900, t, &src);
+        }
         (void)lite_state_gap(t + 1.0, &dp, &dv);
         (void)lite_clear_state();
         (void)lite_host2et(3, (uint32_t)(k * 500000), 5, &et);

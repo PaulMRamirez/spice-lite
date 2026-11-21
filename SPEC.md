@@ -13,7 +13,7 @@ The pieces, in the order data flows:
 3. **spice-lite (flight guest).** A small C library with no imports and no heap, statically linked into a sequence. It reads the blob in place.
 4. **Validator (ground).** Replays queries against full CSPICE and checks every answer against the bounds the blob declares. Today this is the accuracy tier of the test suite.
 
-In scope for 0.1: time conversion from the host clock, body states in J2000, body orientation, surface sites, and two spacecraft state sources. Out of scope: reading SPICE kernels onboard, instrument kernels and fields of view, attitude (C-kernel) data, shape models, geometry event search, and any write path.
+In scope for 0.1: time conversion from the host clock, body states in J2000, body orientation, surface sites, sub-points, occultation of one body by another, and two spacecraft state sources. Out of scope: reading SPICE kernels onboard, instrument kernels and fields of view, attitude (C-kernel) data, shape models, geometry event search, and any write path.
 
 ## Design constraints
 
@@ -278,8 +278,8 @@ Each call returns a status code, writes results through pointers, and never trap
 | `lite_state_gap(et, &dpos, &dvel)` | Difference between supplied and predicted spacecraft state | yes |
 | `lite_orient(body, et, rot)` | Rotation from J2000 to the body-fixed frame | yes |
 | `lite_site_view(site, target, et, corr, &az, &el, &range)` | Azimuth, elevation, and range of a target seen from a site | geometric only |
-| `lite_sub_point(body, observer, et, &lon, &lat, &alt)` | Point on a body beneath an observer | not yet; returns unsupported |
-| `lite_occulted(target, by, observer, et, &code)` | Whether one body hides another | not yet; returns unsupported |
+| `lite_sub_point(body, observer, et, &lon, &lat, &alt)` | Point on a body's ellipsoid nearest to an observer, and the observer's altitude | geometric only |
+| `lite_occulted(target, by, observer, et, &code)` | Whether one body hides another: none, partial, annular, or full | geometric only; bodies as spheres |
 
 A sequence in F Prime reads the clock with the host's `time` call, which writes a serialized `Fw::Time` into guest memory, and passes those bytes to `lite_fwtime2et`. That helper assumes F Prime's default types and big-endian serialization; a deployment that changes them decodes the time itself and calls `lite_host2et`.
 
@@ -288,6 +288,12 @@ A sequence in F Prime reads the clock with the host's `time` call, which writes 
 Two consequences of the physics are worth knowing. A light-time correction needs the target's segment to reach back by the light time, which is over an hour between Saturn and Earth. And stellar aberration turns the apparent direction by the observer's speed over c, so an error in the observer's velocity moves the apparent position by the range times that velocity error over c; with a spacecraft observer on a coarse predicted segment this dominates the error budget.
 
 **Site views.** Up is the direction from the body center through the site (planetocentric, not geodetic). North is the body's +Z axis with its component along up removed, east completes the right-handed set, azimuth runs from north toward east, and a site at a pole is refused.
+
+**Sub-points and occultation.** Both calls are geometric (no light-time or stellar aberration correction in this version) and both use the supplied spacecraft state while it is fresh.
+
+`lite_sub_point` gives the point on a body's surface nearest to the observer, where the surface is the triaxial ellipsoid of the BODY radii and the frame is the body-fixed frame of the body's ORIENT segment. It returns the planetocentric longitude of that point (from the body's +X axis toward +Y, between minus pi and pi; zero at a pole, where it is undefined), its planetocentric latitude, and the observer's distance from it, which is the altitude. This is SPICE's `subpnt_c` with the method `NEAR POINT/ELLIPSOID` and no correction, with the angles taken as `reclat_c` takes them. The point is found by Newton's method on one number, the multiplier that carries the surface point out along its normal to the observer, started from a bound that keeps every step on the near side of the root. A sphere needs no step, the Earth usually three, and Saturn four; the worst over four million random shapes with axis ratios up to a million was 12, the cap is 24, and a case that reached the cap would return unsupported. Given the same body-fixed observer position, the result agrees with CSPICE to 1e-14 of the body's largest radius in the surface point and 1e-15 of the range in altitude, for shapes from a sphere to 900 by 3 by 1 km; given the blob's own states and orientation, the difference is within the errors the blob declares. The call returns unsupported when the body has no radii (BODY flag bit 0 clear) or a radius that is not positive, the status of `lite_orient` when the body has no orientation at that time (no path when it has no ORIENT segment at all), and bad argument when the observer is inside the ellipsoid, which includes the body observing itself. An observer within rounding of the surface may fall either way.
+
+`lite_occulted` says whether body `by` hides body `target` from the observer, as one of four codes: 0 none, 1 partial (the two disks overlap and neither lies inside the other), 2 annular (`by` lies wholly inside the disk of `target`, a transit), 3 full (`target` lies wholly behind `by`). The nonzero codes equal the magnitude of the code SPICE's `occult_c` gives for the same geometry. Each body is modeled as a sphere whose radius is the mean of its three radii, so no orientation is needed; the mean keeps the model's limb within two thirds of the spread between the smallest and largest radius, with no lean toward reporting or missing an occultation. `by` is in front when the tangent from the observer to its sphere is shorter than the tangent to the target's, which is exact for spheres that do not intersect, and the code is 0 whenever it is not in front. With angular radii `a_by` and `a_target` and angle `s` between the centers, the code is none when `s >= a_by + a_target`, full when `a_by >= a_target` and `s <= a_by - a_target`, annular when `a_target > a_by` and `s <= a_target - a_by`, and partial otherwise. For round bodies (the Sun and the Moon in pck00011) this matches `occult_c` with ellipsoid shapes down to the rounding of the positions. For a flattened body the two can differ only while the geometry is within a band around a change of code: the sum, over the two bodies, of the angle between the spheres of the smallest and the largest radius. That band is 0.3% of the Earth's angular radius and 10% of Saturn's, and the second is not small: for Cassini passing behind Saturn at orbit insertion, the sphere model puts the start and end of the occultation of the Sun 3.5 and 7.0 minutes later than CSPICE does, in a 32 minute event. The call returns unsupported when either body lacks positive radii, and bad argument when `target` and `by` are the same body or the observer is on or inside either sphere, which includes the observer being one of the two.
 
 **Status codes.** 0 OK, 1 out of coverage, 2 no path between the bodies (or an unknown body or site), 3 supplied state stale and no predicted segment, 4 bad blob or no active blob, 5 unsupported, 6 bad argument.
 
@@ -312,6 +318,8 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 | State with light time and stellar aberration | under 15,000 instructions | 6,531 to 9,627 |
 | Orientation | none set | 1,170 |
 | Site view | none set | 6,161 |
+| Sub-point | none set | 2,809 to 2,980 from a supplied state; 4,777 to 6,597 over one to three segments |
+| Occultation | none set | 7,040 to 9,372 |
 | `lite_init`, checksum skipped | none set | 2,278 to 2,938 |
 | `lite_init`, checksum verified | none set | 20.8 instructions per blob byte with the default table: 275,040 for a 13 KB blob, 1,866,810 for the 90 KB one |
 
@@ -349,6 +357,8 @@ One deployment note: the F Prime WasmSequencer default gives a guest 8,192 bytes
 | C. Robustness | Truncated and corrupted blobs | Refused or handled with status codes; no trap, no out-of-bounds read | `test/robust.test.mjs` |
 | D. Cost | Instruction counts per call under SpaceWasm | Within the ceilings above | `scripts/measure-cost.mjs` |
 
+Sub-points and occultation have their own file, `test/geometry.test.mjs`, which applies tiers A to C to those two calls on two further blobs (`eclipses` and `saturn-soi`, with vectors from `tools/make-vectors-geometry.mjs`).
+
 The exactness vectors are text. A query file holds one call per line; the expected file holds one result line per query, with every 64-bit float written as the 16 hexadecimal digits of its bit pattern. Bits, not decimals, are what make tier A an exact comparison.
 
 The slicer is not trusted to grade itself. It writes its fit errors into the blob, and tier B recomputes them independently at other times.
@@ -371,7 +381,7 @@ The slicer is not trusted to grade itself. It writes its fit errors into the blo
 4. **Compact orbit segment.** Kind 4 exists, with its error bounded by measurement like the other kinds. Still open: validation on real orbiter kernels (everything so far is synthetic, with no gravity beyond J2, no third bodies, and no drag); whether to add harmonics that suit eccentric orbits; whether elements should be referred to the central body's equator instead of J2000; splitting records at maneuvers; and the cost of the Kepler solve near the eccentricity limit.
 5. **Checksum.** CRC-32 is the draft choice and it dominates start-up: 20.8 interpreter instructions per byte with the default 1 KiB table, against two to three thousand instructions in total with the check skipped. A Fletcher-style sum over 32-bit words measured at 5.8 instructions per byte with no table, but detects fewer error patterns and would change the format. Whether to keep CRC-32, switch, or rely on uplink integrity is open.
 6. **Real memory configuration.** The one-page target assumes a mission will grant a sequence 64 KiB.
-7. **Geodetic sites, sub-points, and occultation.** Declared, not implemented.
+7. **Geodetic sites, and the shape used for occultation.** Sub-points and occultation are implemented; geodetic sites are not. Occultation models bodies as spheres, which moves contact times by minutes for a body as flattened as Saturn seen from nearby. Using the front body's ellipsoid would need its orientation and, for a target that is not a point, an iterative limb test; whether that is worth its cost onboard is open, as is whether either call needs a light-time correction.
 8. **Where the slicer lives.** It is in this repository for now; it may move to cspice-wasm.
 
 ## Notes on sources

@@ -464,6 +464,14 @@ fn main() -> Res<()> {
                 "lite_site_view",
                 &[i(t[1])?, i(t[2])?, Value::F64(hex_f64(t[3])?), i(t[4])?, p(out), p(out + 8), p(out + 16)],
             )?,
+            "subpoint" => host.call(
+                "lite_sub_point",
+                &[i(t[1])?, i(t[2])?, Value::F64(hex_f64(t[3])?), p(out), p(out + 8), p(out + 16)],
+            )?,
+            "occulted" => host.call(
+                "lite_occulted",
+                &[i(t[1])?, i(t[2])?, i(t[3])?, Value::F64(hex_f64(t[4])?), p(out)],
+            )?,
             other => return Err(format!("unknown query `{other}`").into()),
         };
         println!("{{\"query\":\"{}\",\"status\":{status},\"instructions\":{n}}}", line.trim());

@@ -18,7 +18,7 @@ if (lite_site_view(SITE_A, SUN, et, LITE_NONE, &az, &el, &range) != LITE_OK) fai
 if (el > MIN_SUN_ELEVATION) take_image();
 ```
 
-The 0.1 library provides time conversion from the host clock, states of bodies in J2000 (geometric, light-time corrected, and with stellar aberration), body orientation, azimuth and elevation from surface sites, and the spacecraft's own state from either a predicted trajectory in the blob or a state the sequence supplies from onboard navigation. A compact orbit segment (elements, rates, and six harmonic terms in 104 bytes per record) covers long arcs of a closed orbit; it has been validated only on synthetic orbiters so far, and `docs/orbit-segment.md` has the measurements. The slicer can derive the clock conversion from a spacecraft clock (SCLK) kernel to a stated tolerance. `SPEC.md` is the format and behavior specification, including what is declared but not yet implemented.
+The 0.1 library provides time conversion from the host clock, states of bodies in J2000 (geometric, light-time corrected, and with stellar aberration), body orientation, azimuth and elevation from surface sites, the point on a body beneath an observer with the altitude above it, whether one body hides another (bodies as spheres), and the spacecraft's own state from either a predicted trajectory in the blob or a state the sequence supplies from onboard navigation. A compact orbit segment (elements, rates, and six harmonic terms in 104 bytes per record) covers long arcs of a closed orbit; it has been validated only on synthetic orbiters so far, and `docs/orbit-segment.md` has the measurements. The slicer can derive the clock conversion from a spacecraft clock (SCLK) kernel to a stated tolerance. `SPEC.md` is the format and behavior specification, including what is declared but not yet implemented.
 
 ## Properties, as measured
 
@@ -32,7 +32,7 @@ Under the SpaceWasm interpreter a geometric state costs about 1,700 to 2,000 ins
 
 ## Layout
 
-`include/spice_lite.h` and `src/spice_lite.c` are the whole flight library. `tools/slicer.mjs` is the reference slicer and `tools/make-vectors.mjs` regenerates the exactness vectors. `test/` holds the WebAssembly harness, the native driver, two test blobs with their configurations and reports (a large one with a spacecraft trajectory and a small flight-shaped one), and the test tiers. `scripts/` holds the two build scripts, the strict Wasm 1.0 checker, and the cost measurement, whose SpaceWasm host harness is in `bench/spacewasm-host`.
+`include/spice_lite.h` and `src/spice_lite.c` are the whole flight library. `tools/slicer.mjs` is the reference slicer and `tools/make-vectors.mjs` regenerates the exactness vectors. `test/` holds the WebAssembly harness, the native driver, six test blobs with their configurations and reports (a large one with a spacecraft trajectory and a small flight-shaped one), and the test tiers. `scripts/` holds the two build scripts, the strict Wasm 1.0 checker, and the cost measurement, whose SpaceWasm host harness is in `bench/spacewasm-host`.
 
 ## Building and testing
 

@@ -1,0 +1,20 @@
+{
+  "name": "eclipses",
+  "comment": "Geometry test blob: Sun, Earth, and Moon for 16 days that hold the partial solar eclipse of 2004-10-14 and the total lunar eclipse of 2004-10-28, for the sub-point and occultation tests. The kernels carry no ephemeris for a triaxial body, so the Mars barycenter (4) stands in for one: it is given the radii and the IAU orientation of Phobos. Body -900 is a spacecraft with no trajectory; the tests place it with a supplied state.",
+  "kernels": ["naif0012.tls", "pck00011.tpc", "de440s-inner-cassini.bsp"],
+  "window": { "start": "2004-10-13T00:00:00", "stop": "2004-10-29T00:00:00" },
+  "bodies": [
+    { "id": 0, "parent": null },
+    { "id": 3, "parent": 0, "interval": 1382400, "degree": 12 },
+    { "id": 4, "parent": 0, "interval": 1382400, "degree": 10, "radiiFrom": "PHOBOS" },
+    { "id": 10, "parent": 0, "interval": 1382400, "degree": 10, "radiiFrom": "SUN" },
+    { "id": 301, "parent": 3, "interval": 345600, "degree": 12, "radiiFrom": "MOON" },
+    { "id": 399, "parent": 3, "interval": 345600, "degree": 12, "radiiFrom": "EARTH" },
+    { "id": -900, "parent": 0, "spacecraft": true, "noSegment": true }
+  ],
+  "orient": [
+    { "body": 4, "frame": "IAU_PHOBOS", "interval": 86400, "degree": 8 },
+    { "body": 301, "frame": "IAU_MOON", "interval": 86400, "degree": 6 },
+    { "body": 399, "frame": "IAU_EARTH", "interval": 691200, "degree": 3 }
+  ]
+}

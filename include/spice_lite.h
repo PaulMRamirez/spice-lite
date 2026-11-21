@@ -98,10 +98,32 @@ LITE_API int lite_orient(int32_t body, double et, double rot[9]);
 LITE_API int lite_site_view(int32_t site, int32_t target, double et, int32_t corr,
                             double *az, double *el, double *range);
 
-/* Declared by the spec; not implemented in this version. Both return
- * LITE_UNSUPPORTED. */
+/* The point on a body's surface nearest to an observer, geometric (no
+ * aberration correction): planetocentric longitude (-pi to pi) and latitude of
+ * that point in the body-fixed frame, and the observer's distance from it in
+ * kilometers. The surface is the triaxial ellipsoid of the body's radii, so
+ * this is SPICE's subpnt_c with "NEAR POINT/ELLIPSOID" and no correction.
+ * Returns LITE_UNSUPPORTED when the blob gives the body no radii or radii that
+ * are not all positive (or so extreme that the arithmetic leaves the finite
+ * range), the status of lite_orient when the body has no orientation at et
+ * (LITE_NO_PATH with no segment at all), and LITE_BAD_ARG when the observer is
+ * inside the ellipsoid, which includes the body itself as observer. */
 LITE_API int lite_sub_point(int32_t body, int32_t observer, double et,
                             double *lon, double *lat, double *alt);
+
+/* Occultation codes for lite_occulted. The nonzero values equal the magnitude
+ * of the code SPICE's occult_c gives for the same geometry. */
+#define LITE_OCC_NONE 0    /* no part of target is behind by */
+#define LITE_OCC_PARTIAL 1 /* the two disks overlap, neither inside the other */
+#define LITE_OCC_ANNULAR 2 /* by lies wholly inside target's disk: a transit */
+#define LITE_OCC_FULL 3    /* target lies wholly behind by */
+
+/* Whether body `by` hides body `target` as seen from observer, geometric. Each
+ * body is a sphere of the mean of its three radii. code receives a LITE_OCC_
+ * value; it is LITE_OCC_NONE whenever `by` is the farther of the two. Returns
+ * LITE_UNSUPPORTED when either body lacks positive radii, and LITE_BAD_ARG
+ * when target and by are the same body or the observer is on or inside either
+ * sphere. No orientation is needed. */
 LITE_API int lite_occulted(int32_t target, int32_t by, int32_t observer, double et,
                            int32_t *code);
 
