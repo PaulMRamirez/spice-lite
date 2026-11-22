@@ -2,7 +2,7 @@
 
 What spice-lite has been run against beyond its own synthetic test data: three orbiters and their spacecraft clocks, from NAIF's public archives. This file lists the kernels, says how to fetch them, and holds the clock results; the orbit results are in `docs/orbit-segment.md`, under "Real orbiters".
 
-None of these kernels is committed to this repository, and none is used by the test suite or by CI, which run on the small fixtures of cspice-wasm and on synthetic kernels. The figures here are reproducible by hand, not checked on every push.
+None of these kernels is committed to this repository, and none is used by the test suite or the per-push checks, which run on the small fixtures of cspice-wasm and on synthetic kernels. A separate workflow, `real-kernels`, fetches them (checked against their hashes, and cached), reruns both tools, and fails unless every table here and in `docs/orbit-segment.md` comes out as committed; it runs weekly, on demand, and on pull requests that change the tools involved. Figures quoted in the surrounding prose are not checked, only the tables.
 
 ## The kernels
 
