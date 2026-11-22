@@ -31,6 +31,16 @@ for src in "$ROOT/examples/sequence/sun_watch.c" "$ROOT/src/spice_lite.c" "$ROOT
     -ffp-contract=off -fvisibility=hidden -Wall -Wextra -Werror -I"$ROOT/include" ${SEQUENCE_DEFS:-} -c -o "$obj" "$src"
   OBJS+=("$obj")
 done
-"$LD" --no-entry --strip-all -z stack-size=4096 --initial-memory=65536 -o "$OUT" "${OBJS[@]}"
+# SEQUENCE_PAGE_SIZE=1 links the module with one-byte memory pages (the custom
+# page sizes proposal) in place of one standard 64 KiB page: its memory is then
+# exactly what its data and stack need, about 19 KB with the 13 KB blob. That
+# is not WebAssembly 1.0, and it needs a wasm-ld that knows --page-size (LLVM 20
+# or later; name it with WASM_LD). See docs/fprime-integration.md for why a
+# deployment may want it.
+if [ "${SEQUENCE_PAGE_SIZE:-65536}" = "1" ]; then
+  "$LD" --no-entry --strip-all -z stack-size=4096 --page-size=1 -o "$OUT" "${OBJS[@]}"
+else
+  "$LD" --no-entry --strip-all -z stack-size=4096 --initial-memory=65536 -o "$OUT" "${OBJS[@]}"
+fi
 rm -f "${OBJS[@]}"
 echo "$OUT: $(wc -c < "$OUT") bytes"
