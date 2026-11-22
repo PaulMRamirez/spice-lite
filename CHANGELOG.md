@@ -1,8 +1,8 @@
 # Changelog
 
-The blob format is "SLB1", draft 0.1 (`SPEC.md`). Nothing here has been tagged or released yet; this file records what `main` holds so that a first tag has something to point at.
+The blob format is "SLB1", draft 0.1 (`SPEC.md`). Tags are `vX.Y.Z` on `main`.
 
-## 0.1.0 (not yet tagged)
+## 0.1.0 (22 November 2026)
 
 Flight library (`src/spice_lite.c`, `include/spice_lite.h`), import-free C99, one 64 KiB page as strict WebAssembly 1.0:
 
