@@ -60,13 +60,22 @@ LITE_API int lite_init(const void *blob, uint32_t len, uint32_t flags);
 
 /* Converts a host clock reading to ET using the TIME section: the piece of
  * this time base with the latest start not after the reading, found by binary
- * search (lite_init has checked that the entries are sorted). */
+ * search (lite_init has checked that the entries are sorted). Returns
+ * LITE_OUT_OF_COVERAGE when no piece of the base starts at or before the
+ * reading, or when the piece that does is a gap: readings the blob says the
+ * clock never showed, or that lie past what the blob was cut for.
+ *
+ * Only the low 16 bits of time_base are the time base. In a blob whose header
+ * says its pieces are selected by context as well (flag bit 2), bits 16 to 23
+ * are the context, and a piece answers only readings of its own base and
+ * context; in any other blob those bits are ignored. */
 LITE_API int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double *et);
 
 /* Same, from a serialized F Prime Fw::Time in its default layout: time base
  * (U16), context (U8), seconds (U32), microseconds (U32), big-endian, 11 bytes.
- * Deployments that change those types or the byte order should decode the
- * time themselves and call lite_host2et. */
+ * The context byte is passed on as the context described above, so it counts
+ * only in a blob that selects by context. Deployments that change those types
+ * or the byte order should decode the time themselves and call lite_host2et. */
 LITE_API int lite_fwtime2et(const uint8_t *bytes, uint32_t len, double *et);
 
 /* State of target relative to observer in J2000. state receives position then

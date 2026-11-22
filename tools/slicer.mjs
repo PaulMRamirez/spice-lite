@@ -89,27 +89,46 @@ class Writer {
 const f64s = (arr) => new Uint8Array(new Float64Array(arr).buffer.slice(0));
 
 // TIME entries in the order the format requires (SPEC.md, "TIME"): ascending by
-// time base, then by host_start, with no two pieces of one base starting at the
-// same reading. The library refuses any other order, because it finds a piece
-// by binary search. Returns a sorted copy; throws on a piece it cannot place.
+// key, then by host_start, with no two pieces of one key starting at the same
+// reading. The key is the time base, with the context above it when any piece
+// names one (the blob then selects by context; pieces that name none have
+// context 0). The library refuses any other order, because it finds a piece by
+// binary search. Returns a sorted copy; throws on a piece it cannot place.
+export const timeKey = (t) => t.base + 65536 * (t.context ?? 0);
 export function sortTime(time) {
   for (const t of time) {
     if (!Number.isInteger(t.base) || t.base < 0 || t.base > 65535) throw new Error(`TIME: time base ${t.base} is not a 16-bit unsigned integer`);
+    if (t.context !== undefined && (!Number.isInteger(t.context) || t.context < 0 || t.context > 255)) throw new Error(`TIME: context ${t.context} of time base ${t.base} is not an 8-bit unsigned integer`);
     if (![t.hostStart, t.etStart, t.rate].every(Number.isFinite)) throw new Error(`TIME: a piece of time base ${t.base} holds a number that is not finite`);
+    if (t.maxErr !== undefined && !(t.maxErr >= 0 && Number.isFinite(t.maxErr))) throw new Error(`TIME: a piece of time base ${t.base} has an error bound that is not a number at or above zero`);
   }
   if (time.length > 4096) throw new Error(`TIME: ${time.length} pieces; a blob holds at most 4,096 (loosen a clock's tolerance or shorten the window)`);
-  const sorted = [...time].sort((a, b) => a.base - b.base || a.hostStart - b.hostStart);
+  const sorted = [...time].sort((a, b) => timeKey(a) - timeKey(b) || a.hostStart - b.hostStart);
   for (let i = 1; i < sorted.length; i++) {
-    if (sorted[i].base === sorted[i - 1].base && sorted[i].hostStart === sorted[i - 1].hostStart) {
-      throw new Error(`TIME: two pieces of time base ${sorted[i].base} start at host second ${sorted[i].hostStart}; a reading there would have two answers`);
+    if (timeKey(sorted[i]) === timeKey(sorted[i - 1]) && sorted[i].hostStart === sorted[i - 1].hostStart) {
+      throw new Error(`TIME: two pieces of time base ${sorted[i].base}${sorted[i].context === undefined ? '' : `, context ${sorted[i].context},`} start at host second ${sorted[i].hostStart}; a reading there would have two answers`);
     }
   }
   return sorted;
 }
 
+// The smallest 32-bit float not below x, for an error bound that must not be
+// rounded down when it is stored.
+export function f32Up(x) {
+  const f = Math.fround(x);
+  if (f >= x) return f;
+  const v = new DataView(new ArrayBuffer(4));
+  v.setFloat32(0, f);
+  v.setUint32(0, v.getUint32(0) + 1);
+  return v.getFloat32(0);
+}
+
 function buildBlob(model) {
-  const { bodies, ephem, orient, sites, prov, flags, created } = model;
+  const { bodies, ephem, orient, sites, prov, created } = model;
   const time = sortTime(model.time);
+  // Header flag bit 2: pieces are selected by context too. Bit 3: some piece
+  // is a gap. A library from before either refuses a blob that sets it.
+  const flags = model.flags | (time.some((t) => t.context !== undefined) ? 4 : 0) | (time.some((t) => t.gap) ? 8 : 0);
   const sections = [];
 
   const mk = (type, required, entries, entrySize, fill, tail = []) => {
@@ -121,6 +140,9 @@ function buildBlob(model) {
   if (time.length) {
     mk(1, false, time, 32, (v, o, t) => {
       v.setUint16(o, t.base, true);
+      v.setUint8(o + 2, t.context ?? 0);
+      v.setUint8(o + 3, t.gap ? 1 : 0);
+      v.setFloat32(o + 4, t.maxErr === undefined ? 0 : f32Up(t.maxErr), true);
       v.setFloat64(o + 8, t.hostStart, true);
       v.setFloat64(o + 16, t.etStart, true);
       v.setFloat64(o + 24, t.rate, true);
@@ -437,7 +459,11 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
   // TIME pieces: an entry that names a spacecraft clock ("sclk") is derived from
   // the SCLK kernel within its tolerance, and one marked "unix" from the
   // leapseconds kernel (tools/sclk-time.mjs); any other entry is one explicit
-  // piece, written as given.
+  // piece, written as given, or with "gap": true a reading from which the
+  // base (and context) is refused until its next piece. Any entry may name a
+  // "context" (0 to 255); the blob then selects pieces by context as well as
+  // base. An explicit piece may state its error bound as "maxErrorSeconds";
+  // derived pieces carry the error the slicer measured.
   const pieces = [];
   const timeFit = [];
   for (const t of config.time ?? []) {
@@ -446,7 +472,22 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
       pieces.push(...derived.pieces);
       timeFit.push(derived.fit);
     } else {
-      pieces.push({ base: t.base, hostStart: t.hostStart, etStart: window[0] + (t.etOffset ?? 0), rate: t.rate ?? 1 });
+      const piece = t.gap ? { base: t.base, hostStart: t.hostStart, etStart: 0, rate: 0, gap: true }
+        : { base: t.base, hostStart: t.hostStart, etStart: window[0] + (t.etOffset ?? 0), rate: t.rate ?? 1 };
+      if (t.context !== undefined) piece.context = t.context;
+      if (!t.gap && t.maxErrorSeconds !== undefined) piece.maxErr = t.maxErrorSeconds;
+      pieces.push(piece);
+    }
+  }
+  // A piece is selected by its base (and context) and the reading alone, so
+  // two derived entries that share both must not cover the same readings: each
+  // checks its own partitions against one another, and this checks them
+  // against the other entry's.
+  const spans = timeFit.flatMap((f) => f.partitions.map((q) => ({ key: timeKey(f), base: f.base, first: q.hostFirst, last: q.hostLast })))
+    .sort((x, y) => x.key - y.key || x.first - y.first);
+  for (let i = 1; i < spans.length; i++) {
+    if (spans[i].key === spans[i - 1].key && spans[i].first <= spans[i - 1].last) {
+      throw new Error(`TIME: two entries of time base ${spans[i].base} cover the same readings (host seconds ${spans[i].first} to ${Math.min(spans[i].last, spans[i - 1].last)}), so the base cannot tell them apart; give each its own base or its own "context"`);
     }
   }
   // Written sorted by base, then start, as the format requires; two entries of
@@ -467,7 +508,7 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
   };
   if (timeFit.length) {
     report.timeFit = timeFit;
-    prov.time = timeFit.map((f) => ({ base: f.base, ...(f.unix ? { unix: true } : { sclk: f.sclk }), pieces: f.pieces, toleranceS: f.toleranceSeconds, maxErrS: f.maxErrSeconds }));
+    prov.time = timeFit.map((f) => ({ base: f.base, ...(f.context === undefined ? {} : { context: f.context }), ...(f.unix ? { unix: true } : { sclk: f.sclk }), pieces: f.pieces, ...(f.gaps ? { gaps: f.gaps } : {}), toleranceS: f.toleranceSeconds, maxErrS: f.maxErrSeconds }));
   }
   const rootIsSsb = roots[0].id === 0;
   const blob = buildBlob({ time, bodies, ephem, orient, sites, prov, flags: (rootIsSsb ? 1 : 0) | (geodetic && sites.length ? 2 : 0), created, coverage });
@@ -497,6 +538,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log(`  orient ${s.body}: ${s.recordCount} records, degree ${s.degree}, ${s.bytes} bytes, max error ${s.maxErr.toExponential(2)} rad`);
   }
   for (const f of report.timeFit ?? []) {
-    console.log(`  time base ${f.base} from ${f.unix ? 'Unix time' : `clock ${f.sclk}`}: ${f.pieces} pieces, max error ${f.maxErrSeconds.toExponential(2)} s (tolerance ${f.toleranceSeconds.toExponential(2)} s)`);
+    console.log(`  time base ${f.base}${f.context === undefined ? '' : `, context ${f.context},`} from ${f.unix ? 'Unix time' : `clock ${f.sclk}`}: ${f.pieces} pieces${f.gaps ? ` and ${f.gaps} gaps` : ''}, max error ${f.maxErrSeconds.toExponential(2)} s (tolerance ${f.toleranceSeconds.toExponential(2)} s)`);
   }
 }

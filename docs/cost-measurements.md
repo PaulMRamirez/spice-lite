@@ -17,10 +17,10 @@ The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped m
 <!-- full-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_init, checksum verified (90 KB blob) | 1,866,863 | 1,867 |
-| lite_init, checksum skipped | 2,990 | 3 |
-| lite_host2et | 136 | 1 |
-| lite_fwtime2et | 186 | 1 |
+| lite_init, checksum verified (90 KB blob) | 1,866,909 | 1,867 |
+| lite_init, checksum skipped | 3,036 | 4 |
+| lite_host2et | 147 | 1 |
+| lite_fwtime2et | 206 | 1 |
 | lite_state, one segment (Moon from Earth-Moon barycenter), geometric | 1,758 | 2 |
 | lite_state, two segments (Moon from Earth), geometric | 3,598 | 4 |
 | lite_state, three segments (Sun from Earth), geometric | 4,744 | 5 |
@@ -45,9 +45,9 @@ The shipped module declares a single 64 KiB page. The `sun-earth-moon` blob (Sun
 <!-- flight-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_init, checksum verified (13 KB blob) | 275,055 | 276 |
-| lite_init, checksum skipped | 2,292 | 3 |
-| lite_host2et | 109 | 1 |
+| lite_init, checksum verified (13 KB blob) | 275,080 | 276 |
+| lite_init, checksum skipped | 2,317 | 3 |
+| lite_host2et | 118 | 1 |
 | lite_state, Moon from Earth, geometric | 3,452 | 4 |
 | lite_state, Sun from Earth, light time and stellar aberration | 6,124 | 7 |
 | lite_orient, Moon | 1,178 | 2 |
@@ -61,9 +61,9 @@ Verifying the CRC-32 is the costly part of `lite_init`, and its cost trades agai
 <!-- crc-table:start -->
 | LITE_CRC_TABLES | Table size | Module size | Instructions per blob byte | lite_init on the 13 KB blob | Slices |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 64 bytes | 25,521 bytes | 34.0 | 449,222 | 450 |
-| 1 (default) | 1,024 bytes | 26,601 bytes | 20.8 | 275,055 | 276 |
-| 4 | 4,096 bytes | 29,623 bytes | 13.8 | 183,047 | 184 |
+| 0 | 64 bytes | 25,685 bytes | 34.0 | 449,247 | 450 |
+| 1 (default) | 1,024 bytes | 26,765 bytes | 20.8 | 275,080 | 276 |
+| 4 | 4,096 bytes | 29,787 bytes | 13.8 | 183,072 | 184 |
 <!-- crc-table:end -->
 
 The default is the middle row. A larger table buys less than it would on real hardware, because under an interpreter the cost is dominated by the number of operations, not by memory traffic.
@@ -114,12 +114,12 @@ Against earlier drafts, which modeled both bodies as spheres at 7,040 to 9,372 i
 <!-- time-table:start -->
 | TIME pieces | Blob | Readings | Fewest instructions | Most instructions | Held to 500 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | sun-earth-moon (committed) | 4 | 78 | 109 | yes |
-| 6 | sclk-drift (committed; the synthetic drifting clock to a microsecond) | 15 | 115 | 164 | yes |
-| 26 | the first 26 clock pieces of sclk-many (30 days to 0.1 microseconds) | 55 | 169 | 220 | yes |
-| 206 | sclk-many (committed; 203 clock pieces and three of other bases) | 416 | 250 | 303 | yes |
-| 256 | synthetic table of 256 pieces (the slicer's default limit for one clock) | 515 | 277 | 317 | yes |
-| 4,096 | synthetic table of 4,096 pieces (the most the format allows) | 517 | 385 | 421 | yes |
+| 1 | sun-earth-moon (committed) | 4 | 82 | 118 | yes |
+| 6 | sclk-drift (committed; the synthetic drifting clock to a microsecond) | 15 | 122 | 177 | yes |
+| 26 | the first 26 clock pieces of sclk-many (30 days to 0.1 microseconds) | 55 | 180 | 237 | yes |
+| 206 | sclk-many (committed; 203 clock pieces and three of other bases) | 416 | 267 | 326 | yes |
+| 256 | synthetic table of 256 pieces (the slicer's default limit for one clock) | 515 | 296 | 342 | yes |
+| 4,096 | synthetic table of 4,096 pieces (the most the format allows) | 517 | 412 | 454 | yes |
 <!-- time-table:end -->
 
 A conversion costs about 85 instructions plus 27 for each probe, and a table of n pieces takes at most the whole part of log2(n) plus one probes: one probe for one piece, three for six, five for 26, eight for 206, thirteen for 4,096. The spread within a row is mostly the number of probes a reading happens to need, and the cheapest readings are those of a time base the blob lacks. The format caps the section at 4,096 entries, so the last row is the largest table a blob may hold and every row is held to the ceiling. Before the cap, the largest table a 1 MiB blob could hold (32,717 entries, 15 probes) measured exactly 500, at the ceiling and not safely under it; that is why the cap exists.

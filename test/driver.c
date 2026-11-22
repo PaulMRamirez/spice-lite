@@ -252,6 +252,20 @@ static void battery(double t0, double t1)
 
 static uint16_t t_base(const uint8_t *e) { return (uint16_t)(e[0] | (e[1] << 8)); }
 
+/* What selects a piece: its time base, and its context too in a blob whose
+ * header sets flag bit 2. hflags is the header's flag word. */
+static uint32_t t_key(const uint8_t *e, uint32_t hflags)
+{
+    return (uint32_t)t_base(e) | ((hflags & 4u) != 0u ? (uint32_t)e[2] << 16 : 0u);
+}
+
+static uint32_t header_flags(const uint8_t *b)
+{
+    uint32_t f;
+    memcpy(&f, b + 16, 4);
+    return f;
+}
+
 static double t_f64(const uint8_t *e, uint32_t off)
 {
     double d;
@@ -275,18 +289,26 @@ static int time_find(const uint8_t *b, uint32_t *off, uint32_t *count)
     return 0;
 }
 
-static int time_sorted(const uint8_t *tab, uint32_t count)
+static int time_sorted(const uint8_t *tab, uint32_t count, uint32_t hflags)
 {
     uint32_t i;
     for (i = 0; i < count; i++) {
         const uint8_t *e = tab + i * T_ENTRY;
         double a = t_f64(e, 8), b = t_f64(e, 16), c = t_f64(e, 24);
+        float err;
         if (a - a != 0.0 || b - b != 0.0 || c - c != 0.0) {
+            return 0;
+        }
+        /* a gap only where the header announces gaps; an error that is a
+         * number and not negative */
+        memcpy(&err, e + 4, 4);
+        if (((e[3] & 1u) != 0u && (hflags & 8u) == 0u) || !(err >= 0.0f)) {
             return 0;
         }
         if (i > 0u) {
             const uint8_t *p = e - T_ENTRY;
-            if (t_base(e) < t_base(p) || (t_base(e) == t_base(p) && !(a > t_f64(p, 8)))) {
+            if (t_key(e, hflags) < t_key(p, hflags) ||
+                (t_key(e, hflags) == t_key(p, hflags) && !(a > t_f64(p, 8)))) {
                 return 0;
             }
         }
@@ -294,8 +316,8 @@ static int time_sorted(const uint8_t *tab, uint32_t count)
     return 1;
 }
 
-static int time_scan(const uint8_t *tab, uint32_t count, uint32_t time_base, uint32_t seconds,
-                     uint32_t useconds, double *et)
+static int time_scan(const uint8_t *tab, uint32_t count, uint32_t hflags, uint32_t time_base,
+                     uint32_t seconds, uint32_t useconds, double *et)
 {
     const uint8_t *best = 0;
     double host;
@@ -306,13 +328,14 @@ static int time_scan(const uint8_t *tab, uint32_t count, uint32_t time_base, uin
     host = (double)seconds + (double)useconds * 1.0e-6;
     for (i = 0; i < count; i++) {
         const uint8_t *e = tab + i * T_ENTRY;
-        if (t_base(e) == (uint16_t)time_base && t_f64(e, 8) <= host) {
+        if (t_key(e, hflags) == (time_base & ((hflags & 4u) != 0u ? 0xffffffu : 0xffffu)) &&
+            t_f64(e, 8) <= host) {
             if (best == 0 || t_f64(e, 8) >= t_f64(best, 8)) {
                 best = e;
             }
         }
     }
-    if (best == 0) {
+    if (best == 0 || (best[3] & 1u) != 0u) { /* no piece, or a gap */
         return LITE_OUT_OF_COVERAGE;
     }
     *et = t_f64(best, 16) + t_f64(best, 24) * (host - t_f64(best, 8));
@@ -332,7 +355,7 @@ static void time_check(const uint8_t *copy)
         return;
     }
     tab = copy + off;
-    if (!time_sorted(tab, count)) {
+    if (!time_sorted(tab, count, header_flags(copy))) {
         printf("fault: lite_init accepted a TIME section that is not sorted\n");
         exit(1);
     }
@@ -343,7 +366,7 @@ static void time_check(const uint8_t *copy)
         if (count > 0u && (k % 4u) != 3u) {
             const uint8_t *e = tab + (rng() % count) * T_ENTRY;
             double h = t_f64(e, 8);
-            base = t_base(e);
+            base = t_base(e) | ((uint32_t)e[2] << 16); /* its context too, as F Prime would pass it */
             if (h >= 0.0 && h < 4294967295.0) {
                 double us = (h - (double)(uint32_t)h) * 1.0e6 + 0.5;
                 sec = (uint32_t)h;
@@ -359,9 +382,11 @@ static void time_check(const uint8_t *copy)
         if ((k % 8u) == 7u) {
             base = rng() % 8u; /* often a base the blob lacks */
         } else if ((k % 8u) == 6u) {
-            base += 65536u; /* only the low 16 bits of the argument count */
+            base += 1u << 24; /* bits above the context never count */
+        } else if ((k % 8u) == 5u) {
+            base ^= (rng() % 4u) << 16; /* often another context */
         }
-        sw = time_scan(tab, count, base, sec, usec, &want);
+        sw = time_scan(tab, count, header_flags(copy), base, sec, usec, &want);
         sg = lite_host2et(base, sec, usec, &got);
         if (sw != sg || (sw == LITE_OK && memcmp(&want, &got, 8) != 0)) {
             printf("fault: lite_host2et(%u, %u, %u) gave status %d, a scan of every entry gives %d%s\n",
@@ -377,7 +402,7 @@ static void time_check(const uint8_t *copy)
 static void time_edit(uint8_t *copy, uint32_t off, uint32_t count)
 {
     uint8_t *tab = copy + off, tmp[T_ENTRY];
-    uint32_t i = rng() % count, j = rng() % (count - 1u), kind = rng() % 8u;
+    uint32_t i = rng() % count, j = rng() % (count - 1u), kind = rng() % 11u;
     if (j >= i) {
         j++;
     }
@@ -406,6 +431,23 @@ static void time_edit(uint8_t *copy, uint32_t off, uint32_t count)
     } else if (kind == 6u) { /* a start that is not a finite number */
         tab[i * T_ENTRY + 14u] = 0xF0u;
         tab[i * T_ENTRY + 15u] = (rng() & 1u) ? 0x7Fu : 0xFFu;
+    } else if (kind == 8u) { /* an entry made a gap, or no longer one, with the header saying so or not */
+        tab[i * T_ENTRY + 3u] ^= 1u;
+        if ((rng() & 1u) != 0u) {
+            copy[16] ^= 8u;
+        }
+    } else if (kind == 9u) { /* a context changed, in a blob that selects by context or not */
+        tab[i * T_ENTRY + 2u] = (uint8_t)(tab[i * T_ENTRY + 2u] + rng() % 3u);
+        if ((rng() & 1u) != 0u) {
+            copy[16] ^= 4u;
+        }
+    } else if (kind == 10u) { /* the error field: a small number, a negative one, or not a number */
+        float err = (rng() % 3u) == 0u ? -1.0e-6f : (float)(rng() % 1000u) * 1.0e-9f;
+        memcpy(tab + i * T_ENTRY + 4u, &err, 4);
+        if ((rng() % 4u) == 0u) {
+            tab[i * T_ENTRY + 6u] = 0xC0u;
+            tab[i * T_ENTRY + 7u] = 0x7Fu;
+        }
     } else { /* the rate and offset rewritten: the order is untouched */
         double r = 1.0 + ((double)(rng() % 2001u) - 1000.0) * 1.0e-9, o = (double)(rng() % 100000u) * 0.01;
         memcpy(tab + i * T_ENTRY + 16u, &o, 8);
@@ -473,7 +515,7 @@ static int fuzz(const char *path, int iterations, uint32_t seed)
         if (only_time && init_flags == LITE_INIT_SKIP_CRC) {
             /* nothing but the TIME table changed and the checksum is not
              * looked at: accepted exactly when the table is still sorted */
-            int sorted = time_sorted(copy + time_off, time_count);
+            int sorted = time_sorted(copy + time_off, time_count, header_flags(copy));
             if ((st == LITE_OK) != sorted) {
                 printf("fault: a TIME section that is %s was %s\n", sorted ? "sorted" : "not sorted",
                        st == LITE_OK ? "accepted" : "refused");

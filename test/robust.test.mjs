@@ -114,6 +114,36 @@ test('an unsorted TIME section is a bad blob, with a valid checksum', async () =
   }
 });
 
+test('TIME gaps, contexts, and error bounds: what lite_init requires of each', async () => {
+  const table = readTimeTable(drift).map(({ maxErr, ...t }) => ({ ...t, maxErr }));
+  const loads = async (t, opts) => (await load(withTimeTable(drift, t, opts))).initStatus;
+  // An error bound is a number at or above zero.
+  assert.equal(await loads(table.map((t, i) => (i === 2 ? { ...t, maxErr: 0 } : t))), 0);
+  for (const bad of [-1e-9, NaN, -Infinity]) assert.equal(await loads(table.map((t, i) => (i === 2 ? { ...t, maxErr: bad } : t))), 4, `an error bound of ${bad}`);
+  // A gap needs header flag bit 3, and with it a gap is a piece like any
+  // other in the order: it may not start where another piece of its base does.
+  const gap = { base: table[0].base, hostStart: table[1].hostStart - 1, etStart: 0, rate: 0, gap: true };
+  const gapped = [table[0], gap, ...table.slice(1)];
+  assert.equal(await loads(gapped), 0);
+  assert.equal(await loads(gapped, { headerFlags: 1 }), 4, 'a gap the header does not announce');
+  assert.equal(await loads(table, { headerFlags: 1 | 8 }), 0, 'the bit with no gap in the table is harmless');
+  assert.equal(await loads([table[0], { ...gap, hostStart: table[1].hostStart }, ...table.slice(1)]), 4, 'a gap that starts with another piece');
+  const api = await load(withTimeTable(drift, gapped));
+  const at = (h) => api.host2et(gap.base, Math.floor(h), Math.round((h - Math.floor(h)) * 1e6)).status;
+  assert.deepEqual([at(gap.hostStart - 1e-6 > table[0].hostStart ? gap.hostStart - 1 : table[0].hostStart), at(gap.hostStart), at(table[1].hostStart - 0.5), at(table[1].hostStart)], [0, 1, 1, 0]);
+  // With header flag bit 2 the order is by context first, then base, then
+  // start; the same entries are out of order when read without it, or when a
+  // lower context follows a higher one.
+  const two = [...table.map((t) => ({ ...t, context: 1 })), ...table.map((t) => ({ ...t, context: 2 }))];
+  assert.equal(await loads(two), 0);
+  assert.equal(await loads(two, { headerFlags: 1 }), 4, 'two contexts read as one base repeat their starts');
+  assert.equal(await loads([...two.slice(table.length), ...two.slice(0, table.length)]), 4, 'context 2 before context 1');
+  // Without the bit the context byte is not looked at, so any value loads.
+  assert.equal(await loads(table.map((t) => ({ ...t, context: 9 })), { headerFlags: 1 }), 0);
+  // Header flag bits beyond the four in use are still refused.
+  assert.equal(await loads(table, { headerFlags: 1 | 16 }), 4);
+});
+
 test('overlapping TIME pieces (two of one base starting together) are a bad blob', async () => {
   const table = readTimeTable(drift);
   const mid = table[3];

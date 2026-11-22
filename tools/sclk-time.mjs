@@ -191,7 +191,8 @@ async function cutStretches(stretches, entry, who) {
   const fitSamples = 128, checkSamples = 2048;
   const out = [];
   const perPartition = [];
-  let worst = 0, worstAt = null, samples = 0;
+  const ctx = entry.context === undefined ? {} : { context: entry.context };
+  let worst = 0, worstAt = null, samples = 0, gaps = 0;
   for (const s of stretches) {
     const truth = s.truth;
     let accepted = [];
@@ -221,12 +222,20 @@ async function cutStretches(stretches, entry, who) {
     for (const { piece, m } of accepted) {
       samples += m.samples;
       if (m.worst > worst) { worst = m.worst; worstAt = hostOf(m.at); }
-      out.push({ base: entry.base, hostStart: piece.hostStart, etStart: piece.etStart, rate: piece.rate });
+      out.push({ base: entry.base, ...ctx, hostStart: piece.hostStart, etStart: piece.etStart, rate: piece.rate, maxErr: m.worst });
+    }
+    // "refuseGaps": the first reading after the stretch starts a gap, unless
+    // another stretch begins exactly there. That covers the counts between two
+    // partitions that the clock never showed, and every reading after the
+    // window's last.
+    if (entry.refuseGaps && !stretches.some((q) => q.uLo === s.uHi + 1)) {
+      out.push({ base: entry.base, ...ctx, hostStart: hostOf(s.uHi + 1), etStart: 0, rate: 0, gap: true });
+      gaps++;
     }
     perPartition.push({ partition: s.partition, hostFirst: hostOf(s.uLo), hostLast: hostOf(s.uHi), pieces: accepted.length });
   }
-  if (out.length > maxPieces) throw budget.error();
-  return { out, perPartition, worst, worstAt, samples };
+  if (out.length - gaps > maxPieces) throw budget.error();
+  return { out, perPartition, worst, worstAt, samples, gaps };
 }
 
 // ---- the entry point --------------------------------------------------------
@@ -290,16 +299,16 @@ export async function sclkTimePieces(spice, entry, window) {
   for (let i = 1; i < byReading.length; i++) {
     if (byReading[i].uLo <= byReading[i - 1].uHi) {
       const pair = [byReading[i - 1].p.partition, byReading[i].p.partition].sort((x, y) => x - y);
-      throw new Error(`${who}: partitions ${pair[0]} and ${pair[1]} share clock readings inside the window (the clock was reset), so one time base cannot tell them apart; give each its own entry with "partition" and its own base, or cut one blob per partition`);
+      throw new Error(`${who}: partitions ${pair[0]} and ${pair[1]} share clock readings inside the window (the clock was reset), so one time base cannot tell them apart; give each its own entry with "partition" and its own base or its own "context", or cut one blob per partition`);
     }
   }
 
   for (const st of stretches) { st.partition = st.p.partition; st.truth = (u) => spice.sct2e(entry.sclk, st.encOf(u)); }
-  const { out, perPartition, worst, worstAt, samples } = await cutStretches(stretches, entry, who);
+  const { out, perPartition, worst, worstAt, samples, gaps } = await cutStretches(stretches, entry, who);
   const fit = {
     base: entry.base, sclk: entry.sclk, timeSystem: clock.timeSystem === 2 ? 'TT' : clock.timeSystem === 1 ? 'TDB' : `system ${clock.timeSystem}`,
     ticksPerHostSecond: T, toleranceSeconds: tol, maxErrSeconds: worst, maxErrAtHostSecond: worstAt,
-    pieces: out.length, maxPieces, checkedReadings: samples, partitions: perPartition,
+    pieces: out.length - gaps, ...(gaps ? { gaps } : {}), ...(entry.context === undefined ? {} : { context: entry.context }), maxPieces, checkedReadings: samples, partitions: perPartition,
   };
   return { pieces: out, fit };
 }
@@ -362,10 +371,10 @@ export async function unixTimePieces(spice, entry, window) {
     while (k > 0 && u < starts[k]) k--;
     return spice.unitim((u - J2000_UNIX * US) / US + offsets[k], 'TAI', 'TDB');
   };
-  const { out, perPartition, worst, worstAt, samples } = await cutStretches([{ partition: 1, uLo, uHi, starts, truth }], entry, who);
+  const { out, perPartition, worst, worstAt, samples, gaps } = await cutStretches([{ partition: 1, uLo, uHi, starts, truth }], entry, who);
   const fit = {
     base: entry.base, unix: true, timeSystem: 'UTC', ticksPerHostSecond: 1, toleranceSeconds: entry.maxErrorSeconds, maxErrSeconds: worst, maxErrAtHostSecond: worstAt,
-    pieces: out.length, maxPieces: entry.maxPieces ?? 256, checkedReadings: samples, leapSeconds: starts.length - 1, partitions: perPartition,
+    pieces: out.length - gaps, ...(gaps ? { gaps } : {}), ...(entry.context === undefined ? {} : { context: entry.context }), maxPieces: entry.maxPieces ?? 256, checkedReadings: samples, leapSeconds: starts.length - 1, partitions: perPartition,
   };
   return { pieces: out, fit };
 }

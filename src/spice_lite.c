@@ -66,6 +66,7 @@ static struct {
     const uint8_t *b;
     uint32_t len;
     uint32_t flags;
+    uint32_t tmask; /* bits of a TIME entry's first word that select a piece */
     int ready;
     int root;
     section sec[SEC_MAX + 1];
@@ -552,7 +553,7 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
             return 0;
         }
     }
-    if ((rd32(b + 16) & ~3u) != 0u && rd16(b + 6) <= 1u) {
+    if ((rd32(b + 16) & ~15u) != 0u && rd16(b + 6) <= 1u) {
         return 0; /* unknown flag bits in a minor version this reader knows */
     }
     nsec = rd16(b + 20);
@@ -689,21 +690,30 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
             return 0;
         }
     }
-    /* TIME: finite numbers, and entries in strictly ascending order of time
-     * base, then host_start, which is what lets lite_host2et search. Two
-     * pieces of one base with the same start are refused with the rest. The
-     * count is capped so that the search has a fixed worst case. */
+    /* TIME: finite numbers, and entries in strictly ascending order of their
+     * key, then host_start, which is what lets lite_host2et search. The key
+     * is the time base, or, in a blob whose header says pieces are selected
+     * by context too (flag bit 2), the context and the time base as one
+     * 24-bit number. Two pieces of one key with the same start are refused
+     * with the rest. The count is capped so that the search has a fixed worst
+     * case. An entry marked as a gap needs the header to say gaps exist (flag
+     * bit 3), so that a reader from before them refuses the blob; an entry's
+     * error is a number that is not negative. */
     if (G.sec[SEC_TIME].count > TIME_MAX) {
         return 0;
     }
+    G.tmask = (rd32(b + 16) & 4u) != 0u ? 0xffffffu : 0xffffu;
     for (i = 0; i < G.sec[SEC_TIME].count; i++) {
         const uint8_t *e = b + G.sec[SEC_TIME].off + i * TIME_ENTRY;
         if (!finite64(rdf64(e + 8)) || !finite64(rdf64(e + 16)) || !finite64(rdf64(e + 24))) {
             return 0;
         }
+        if (((e[3] & 1u) != 0u && (rd32(b + 16) & 8u) == 0u) || !(rdf32(e + 4) >= 0.0)) {
+            return 0;
+        }
         if (i > 0u) {
-            uint32_t base = rd16(e), prev = rd16(e - TIME_ENTRY);
-            if (base < prev || (base == prev && !(rdf64(e + 8) > rdf64(e - TIME_ENTRY + 8)))) {
+            uint32_t key = rd32(e) & G.tmask, prev = rd32(e - TIME_ENTRY) & G.tmask;
+            if (key < prev || (key == prev && !(rdf64(e + 8) > rdf64(e - TIME_ENTRY + 8)))) {
                 return 0;
             }
         }
@@ -744,7 +754,7 @@ int lite_init(const void *blob, uint32_t len, uint32_t flags)
 
 int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double *et)
 {
-    uint32_t base;
+    uint32_t key;
     double host;
     const uint8_t *lo, *hi, *tab;
     if (!G.ready) {
@@ -754,13 +764,14 @@ int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double
         return LITE_BAD_ARG;
     }
     host = (double)seconds + (double)useconds * 1.0e-6;
-    base = (uint16_t)time_base;
-    /* lite_init has checked that the entries ascend by time base, then by
+    key = time_base & G.tmask;
+    /* lite_init has checked that the entries ascend by key (the time base,
+     * with the context above it where the blob selects by context), then by
      * host_start, with no two alike, so the entries that sort at or before
-     * (base, host) are a prefix of the table. The binary search below finds
+     * (key, host) are a prefix of the table. The binary search below finds
      * where that prefix ends, at lo; the entry just before lo is the piece of
-     * this base with the latest host_start not after the reading, if the
-     * prefix is not empty and its last entry has this base. That is the same
+     * this key with the latest host_start not after the reading, if the
+     * prefix is not empty and its last entry has this key. That is the same
      * piece a scan of every entry selects. A blob is at most 1 MiB, so the
      * table has fewer than 2^15 entries and the search takes at most 15
      * probes. The written form (pointers, the base tested for equality
@@ -770,14 +781,16 @@ int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double
     hi = tab + G.sec[SEC_TIME].count * TIME_ENTRY;
     while (lo < hi) {
         const uint8_t *mid = lo + (((uint32_t)(hi - lo) >> 1) & ~(TIME_ENTRY - 1u));
-        uint32_t b = rd16(mid);
-        if (b == base ? rdf64(mid + 8) <= host : b < base) {
+        uint32_t k = rd32(mid) & G.tmask;
+        if (k == key ? rdf64(mid + 8) <= host : k < key) {
             lo = mid + TIME_ENTRY;
         } else {
             hi = mid;
         }
     }
-    if (lo == tab || rd16(lo - TIME_ENTRY) != base) {
+    /* No piece of this key at or before the reading, or the piece is a gap:
+     * a stretch of readings the blob declines to convert. */
+    if (lo == tab || (rd32(lo - TIME_ENTRY) & G.tmask) != key || (lo[3 - (int)TIME_ENTRY] & 1u) != 0u) {
         return LITE_OUT_OF_COVERAGE;
     }
     *et = rdf64(lo - 16) + rdf64(lo - 8) * (host - rdf64(lo - 24));
@@ -790,7 +803,9 @@ int lite_fwtime2et(const uint8_t *bytes, uint32_t len, double *et)
     if (bytes == 0 || len != 11u) {
         return G.ready ? LITE_BAD_ARG : LITE_BAD_BLOB;
     }
-    base = ((uint32_t)bytes[0] << 8) | bytes[1];
+    /* The context rides above the time base, where lite_host2et looks for it
+     * in a blob that selects by context and ignores it in one that does not. */
+    base = ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[0] << 8) | bytes[1];
     sec = ((uint32_t)bytes[3] << 24) | ((uint32_t)bytes[4] << 16) | ((uint32_t)bytes[5] << 8) | bytes[6];
     usec = ((uint32_t)bytes[7] << 24) | ((uint32_t)bytes[8] << 16) | ((uint32_t)bytes[9] << 8) | bytes[10];
     return lite_host2et(base, sec, usec, et);
