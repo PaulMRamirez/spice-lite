@@ -28,7 +28,7 @@ Under the SpaceWasm interpreter a geometric state costs about 1,500 to 2,000 ins
 
 ## A sequence, end to end
 
-`examples/sequence/sun_watch.c` is a demonstration sequence: it waits at a ground site until the Sun is above 10 degrees, then commands an image. Built with the library and a 13 KB blob it is one 32,156-byte module that imports only the F Prime WasmSequencer's host calls and fits in one page. Run in the SpaceWasm interpreter over a simulated clock, it waits through the night and images at the first check where full CSPICE agrees the Sun has cleared the threshold, at about 7,200 instructions (8 sequencer slices) per decision. `docs/sequence-demo.md` has the run.
+`examples/sequence/sun_watch.c` is a demonstration sequence, which has also been run inside F Prime's real WasmSequencer component (`docs/fprime-integration.md`): it waits at a ground site until the Sun is above 10 degrees, then commands an image. Built with the library and a 13 KB blob it is one 32,156-byte module that imports only the F Prime WasmSequencer's host calls and fits in one page. Run in the SpaceWasm interpreter over a simulated clock, it waits through the night and images at the first check where full CSPICE agrees the Sun has cleared the threshold, at about 7,200 instructions (8 sequencer slices) per decision. `docs/sequence-demo.md` has the run.
 
 ## Layout
 
