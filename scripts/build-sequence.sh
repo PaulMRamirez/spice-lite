@@ -7,8 +7,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CC="${CC:-clang}"
 LD="${WASM_LD:-wasm-ld}"
-OUT="$ROOT/build/sun_watch.wasm"
-BLOB="$ROOT/test/blobs/sun-earth-moon.slb"
+# SEQUENCE_OUT, SEQUENCE_BLOB, and SEQUENCE_DEFS (extra -D options for the
+# sequence, such as -DCHECK_PERIOD_US=20000000ull) build a variant; left unset,
+# the module is the one the tests and documents describe.
+OUT="${SEQUENCE_OUT:-$ROOT/build/sun_watch.wasm}"
+BLOB="${SEQUENCE_BLOB:-$ROOT/test/blobs/sun-earth-moon.slb}"
 mkdir -p "$ROOT/build"
 # The blob as a C array, 8-byte aligned so the library can read doubles in place.
 node -e '
@@ -25,7 +28,7 @@ OBJS=()
 for src in "$ROOT/examples/sequence/sun_watch.c" "$ROOT/src/spice_lite.c" "$ROOT/build/sequence_blob.c"; do
   obj="$ROOT/build/sequence_$(basename "$src" .c).o"
   "$CC" --target=wasm32 -mcpu=mvp -O2 -std=c99 -ffreestanding -nostdlib -fno-builtin \
-    -ffp-contract=off -fvisibility=hidden -Wall -Wextra -Werror -I"$ROOT/include" -c -o "$obj" "$src"
+    -ffp-contract=off -fvisibility=hidden -Wall -Wextra -Werror -I"$ROOT/include" ${SEQUENCE_DEFS:-} -c -o "$obj" "$src"
   OBJS+=("$obj")
 done
 "$LD" --no-entry --strip-all -z stack-size=4096 --initial-memory=65536 -o "$OUT" "${OBJS[@]}"

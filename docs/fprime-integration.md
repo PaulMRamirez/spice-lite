@@ -2,7 +2,7 @@
 
 The demonstration sequence (`examples/sequence/sun_watch.c`, `docs/sequence-demo.md`) had only ever run under this repository's own harness, with stand-ins for the sequencer's host calls. This note records the first run inside the real thing: F Prime's `Svc/WasmSequencer` component, built from F Prime's sources, with its own host calls, its own serialization of time, and its own state machines.
 
-What was run, and what was not. The component was driven by its unit-test harness, on Linux x86-64, at F Prime commit `633c89d` (`devel`, 19 November 2026), which pins the `spacewasm` interpreter at 0.7.1. The harness supplies the clock and answers the command; everything between (loading the module, running it in slices of fuel, the `time`, `event`, `rsleep`, `cmd`, and `exit` host calls, the timer wake) is the component's flight code. It was not run in a full deployment with a ground system, and not on a flight processor.
+Two runs were made, on Linux x86-64, at F Prime commit `633c89d` (`devel`, 19 November 2026), which pins the `spacewasm` interpreter at 0.7.1. In the first the component was driven by its unit-test harness: the harness supplies the clock and answers the command, and everything between (loading the module, running it in slices of fuel, the `time`, `event`, `rsleep`, `cmd`, and `exit` host calls, the timer wake) is the component's flight code. The second was a full deployment: F Prime's reference application with its real time source, rate groups, command dispatcher, and event logger, commanded through F Prime's ground system ("In a full deployment", below). Neither was on a flight processor.
 
 ## The result
 
@@ -24,6 +24,28 @@ The slice counts differ by two or three because a host call ends the component's
 
 The same run was repeated with a blob whose TIME section was cut for Unix time (`{ "base": 2, "unix": true }`) and the clock given as Unix seconds under `TB_WORKSTATION_TIME`, which is what F Prime's stock time components report. It produced the same 59 event texts and commanded the image at the same instant.
 
+## In a full deployment
+
+F Prime's reference deployment (`TestDeploymentsProject/Ref`) includes a WasmSequencer, wired to the rest of the application: the time comes from `Svc/PosixTime` (Unix time, `TB_WORKSTATION_TIME`), a rate group ticks the sequencer's timers, the sequencer's commands go to the command dispatcher, and its events go to the event logger and down to the ground system. It was built with two local changes (the alignment constant, and `guestMemorySize` raised to 64 KiB where the deployment configures the sequencer), started, and commanded from F Prime's ground system command line: `Ref.wasmSeq.RUN` with the path of the module.
+
+The clock in this run is the machine's own, so the blob has to be about the present. `examples/fprime/make-live-blob.mjs` cuts one for three days from now, with the Sun relative to the Earth, the Earth's orientation, a Unix time TIME section, and a geodetic site on the equator placed where the Sun will climb through 10 degrees a couple of minutes after the start. The sequence was built against it with a 20 second check period and, for its command, the opcode of a command the deployment really has (`CdhCore.cmdDisp.CMD_NO_OP`, `0x01000000`), in place of the placeholder.
+
+What happened, from the ground system's event log on 22 November 2026:
+
+| UTC | Event |
+| --- | --- |
+| 04:12:01.463 | `Ref.wasmSeq.SequenceStarting` |
+| 04:12:01.464 | sun_watch: waiting, sun elevation deg 9.29 |
+| 04:12:22 to 04:14:56 | eight more waits, 22 seconds apart: 9.37, 9.46, 9.55, 9.63, 9.72, 9.80, 9.89, 9.98 |
+| 04:15:18.283 | sun_watch: imaging, sun elevation deg 10.06 |
+| 04:15:18.284 | `CdhCore.cmdDisp.OpCodeDispatched`: opcode 0x1000000 dispatched |
+| 04:15:18.284 | `CdhCore.cmdDisp.NoOpReceived`, then `OpCodeCompleted` |
+| 04:15:18.284 | `Ref.wasmSeq.SequenceSucceeded` |
+
+Each of the ten elevations was recomputed afterwards with CSPICE at the event's own time tag, from the full kernels: the largest difference is 0.005 degrees, which is the rounding of the report. The sequence commanded at the first check where CSPICE puts the Sun above 10 degrees (the check before it stood at 9.975). The waits are 22 seconds apart and not 20 because the sequencer's timers are checked on a rate group tick.
+
+So the chain holds end to end in a running F Prime application: a real clock, through F Prime's serialization, into the library's time conversion and geometry, to a decision, to a command that the application's dispatcher accepted and executed.
+
 ## What this settles
 
 - **The host call signatures match.** The five imports the sequence declares (`fprime_v1`: `time`, `event`, `cmd`, `rsleep`, `exit`) resolve against the component's, with the types the guest header gives.
@@ -38,11 +60,23 @@ The same run was repeated with a blob whose TIME section was cut for Unix time (
 
 ## What remains unproven
 
-- A full deployment: a topology with the sequencer wired to a real time component, command dispatcher, and event logger, commanded from a ground system. The unit-test harness stands in for those neighbors.
-- A flight processor, and wall-clock time on one.
+- A flight processor, and wall-clock time on one. Both runs were on a Linux x86-64 machine.
+- A deployment other than F Prime's reference application, and uplink of the module and blob over a real link (the module here was read from the machine's own disk).
 - The cost figures in `docs/cost-measurements.md` were measured with `spacewasm` 0.8.0-rc.3. F Prime pins 0.7.1. The slice counts above agree with those figures as closely as host calls allow, but instruction counts were not compared call by call between the two versions.
 - The spacecraft clock convention (`TB_SC_TIME`), which F Prime leaves to each project.
 
 ## Repeating it
 
-`examples/fprime/SpiceLiteSunWatch.cpp` is the test, with instructions at its top. In outline: clone `nasa/fprime` with its `googletest` submodule, install its Python requirements, `fprime-util generate --ut`, copy `build/sun_watch.wasm` into `Svc/WasmSequencer/test/wasm/`, append the test to the suite, change `SPACEWASM_MEMORY_ALIGNMENT` from 8 to 16 in `Svc/WasmSequencer/WasmSequencer.hpp`, and build and run the WasmSequencer unit tests. It needs Rust 1.87 or later for the interpreter. Nothing from F Prime is copied into this repository.
+For the unit-test run, `examples/fprime/SpiceLiteSunWatch.cpp` is the test, with instructions at its top. In outline: clone `nasa/fprime` with its `googletest` submodule, install its Python requirements, `fprime-util generate --ut`, copy `build/sun_watch.wasm` into `Svc/WasmSequencer/test/wasm/`, append the test to the suite, change `SPACEWASM_MEMORY_ALIGNMENT` from 8 to 16 in `Svc/WasmSequencer/WasmSequencer.hpp`, and build and run the WasmSequencer unit tests. It needs Rust 1.87 or later for the interpreter.
+
+For the full deployment: in `TestDeploymentsProject`, make the same change to the alignment constant, and in `Ref/Top/instances.fpp` configure `wasmSeq` with `guestMemorySize = 65536`; `fprime-util generate` and `fprime-util build`; start the ground system from `Ref` with `fprime-gds -n` and the application with `build-artifacts/Linux/Ref/bin/Ref -a 127.0.0.1 -p 50000`. Then cut the blob and build the sequence, and send the command:
+
+```
+SPICE_LITE_KERNELS=<dir with naif0012.tls, pck00011.tpc, de440s.bsp> \
+  node examples/fprime/make-live-blob.mjs build/live.slb "$(date -u -d '+40 seconds' +%Y-%m-%dT%H:%M:%S)" 150
+SEQUENCE_OUT=/tmp/sun_watch_live.wasm SEQUENCE_BLOB=$PWD/build/live.slb \
+  SEQUENCE_DEFS="-DCHECK_PERIOD_US=20000000ull -DOPCODE_TAKE_IMAGE=0x01000000u" bash scripts/build-sequence.sh
+fprime-cli command-send Ref.wasmSeq.RUN --arguments /tmp/sun_watch_live.wasm NO_BLOCK
+```
+
+`de440s.bsp` is NAIF's generic planetary ephemeris (`generic_kernels/spk/planets`), needed because the test fixtures do not cover the present. Nothing from F Prime is copied into this repository.
