@@ -96,7 +96,10 @@ LITE_API int lite_orient(int32_t body, double et, double rot[9]);
 
 /* Azimuth (from north toward east, 0 to 2 pi), elevation, and range of target
  * seen from a site. "Up" is the direction from the body center through the
- * site (planetocentric). Draft 0.1 supports LITE_NONE only. */
+ * site (planetocentric), unless the blob's header says its sites are geodetic
+ * (flag bit 1), in which case it is the outward normal of the body's ellipsoid
+ * through the site and the body must have radii (LITE_UNSUPPORTED otherwise).
+ * Draft 0.1 supports LITE_NONE only. */
 LITE_API int lite_site_view(int32_t site, int32_t target, double et, int32_t corr,
                             double *az, double *el, double *range);
 

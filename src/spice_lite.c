@@ -552,7 +552,7 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
             return 0;
         }
     }
-    if ((rd32(b + 16) & ~1u) != 0u && rd16(b + 6) <= 1u) {
+    if ((rd32(b + 16) & ~3u) != 0u && rd16(b + 6) <= 1u) {
         return 0; /* unknown flag bits in a minor version this reader knows */
     }
     nsec = rd16(b + 20);
@@ -1480,6 +1480,9 @@ int lite_orient(int32_t body, double et, double rot[9])
     return seen ? LITE_OUT_OF_COVERAGE : LITE_NO_PATH;
 }
 
+static int body_radii(int idx, double *r);
+static int near_point(const double *r, const double *p, double *q, double *h);
+
 int lite_site_view(int32_t site, int32_t target, double et, int32_t corr, double *az, double *el,
                    double *range)
 {
@@ -1526,12 +1529,36 @@ int lite_site_view(int32_t site, int32_t target, double et, int32_t corr, double
         sp[k] = rdf64(e + 8 + 8u * (uint32_t)k);
         bf[k] = rot[3 * k] * s[0] + rot[3 * k + 1] * s[1] + rot[3 * k + 2] * s[2];
     }
-    rs = norm3(sp);
-    if (!(rs > 0.0)) {
+    if ((G.flags & 2u) != 0u) {
+        /* Geodetic sites (header flag bit 1): up is the outward normal of the
+         * body's ellipsoid through the site. For a site on or above the
+         * surface that is the normal at the nearest surface point; for one
+         * below it (a site under the reference ellipsoid), the gradient of the
+         * ellipsoid's own equation at the site, which differs from the normal
+         * through it by the flattening times the depth over the radius. */
+        double r[3], q[3], h = 0.0;
+        int np;
+        if (!body_radii(bi, r)) {
+            return LITE_UNSUPPORTED;
+        }
+        np = near_point(r, sp, q, &h);
+        if (np == 2) {
+            return LITE_UNSUPPORTED;
+        }
+        for (k = 0; k < 3; k++) {
+            up[k] = (np == 0 ? q[k] : sp[k]) / (r[k] * r[k]);
+        }
+    } else {
+        for (k = 0; k < 3; k++) {
+            up[k] = sp[k];
+        }
+    }
+    rs = norm3(up);
+    if (!(rs > 0.0) || !finite64(rs)) {
         return LITE_BAD_ARG;
     }
     for (k = 0; k < 3; k++) {
-        up[k] = sp[k] / rs;
+        up[k] = up[k] / rs;
         d[k] = bf[k] - sp[k];
     }
     /* north: the body's +Z axis with its component along "up" removed */

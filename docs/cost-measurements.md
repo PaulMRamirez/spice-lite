@@ -12,7 +12,7 @@ The counts are deterministic for a given compiler build. CI reruns the measureme
 
 ## Every call, on the large test blob
 
-The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 26,274 bytes; compiled IR 41,160 bytes.
+The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 26,601 bytes; compiled IR 41,686 bytes.
 
 <!-- full-table:start -->
 | Call | Instructions | Slices of 1,000 |
@@ -30,7 +30,7 @@ The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped m
 | lite_state, spacecraft from Saturn barycenter (predicted), geometric | 1,472 | 2 |
 | lite_state, Earth from spacecraft, light time and stellar aberration | 9,157 | 10 |
 | lite_orient, Moon | 1,178 | 2 |
-| lite_site_view, Sun from a lunar site | 6,319 | 7 |
+| lite_site_view, Sun from a lunar site | 6,365 | 7 |
 | lite_set_state | 258 | 1 |
 | lite_state, spacecraft from Saturn barycenter (supplied), geometric | 465 | 1 |
 | lite_state, spacecraft from Earth (supplied), geometric | 4,672 | 5 |
@@ -51,7 +51,7 @@ The shipped module declares a single 64 KiB page. The `sun-earth-moon` blob (Sun
 | lite_state, Moon from Earth, geometric | 3,452 | 4 |
 | lite_state, Sun from Earth, light time and stellar aberration | 6,124 | 7 |
 | lite_orient, Moon | 1,178 | 2 |
-| lite_site_view, Sun from a lunar site | 6,151 | 7 |
+| lite_site_view, Sun from a lunar site | 6,197 | 7 |
 <!-- flight-table:end -->
 
 ## Checksum options
@@ -61,9 +61,9 @@ Verifying the CRC-32 is the costly part of `lite_init`, and its cost trades agai
 <!-- crc-table:start -->
 | LITE_CRC_TABLES | Table size | Module size | Instructions per blob byte | lite_init on the 13 KB blob | Slices |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 64 bytes | 25,194 bytes | 34.0 | 449,222 | 450 |
-| 1 (default) | 1,024 bytes | 26,274 bytes | 20.8 | 275,055 | 276 |
-| 4 | 4,096 bytes | 29,296 bytes | 13.8 | 183,047 | 184 |
+| 0 | 64 bytes | 25,521 bytes | 34.0 | 449,222 | 450 |
+| 1 (default) | 1,024 bytes | 26,601 bytes | 20.8 | 275,055 | 276 |
+| 4 | 4,096 bytes | 29,623 bytes | 13.8 | 183,047 | 184 |
 <!-- crc-table:end -->
 
 The default is the middle row. A larger table buys less than it would on real hardware, because under an interpreter the cost is dominated by the number of operations, not by memory traffic.

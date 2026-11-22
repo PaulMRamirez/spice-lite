@@ -186,3 +186,84 @@ test('requests outside the blob get status codes, not answers', { skip }, async 
   assert.equal(api.siteView(1, 10, w0 + 10, 1).status, 5);
   assert.equal(api.exports.lite_sub_point(301, 399, w0, 0, 0, 0), 6);
 });
+
+test('geodetic sites: up is the ellipsoid normal, as a header flag says, and matches CSPICE', { skip }, async () => {
+  await setup();
+  const { slice } = await import('../tools/slicer.mjs');
+  const { load } = await import('./harness.mjs');
+  const base = JSON.parse(readFileSync(resolve(root, 'test/blobs/sun-earth-moon.json'), 'utf8'));
+  const sites = [
+    { id: 1, body: 301, lonDeg: 23.47, latDeg: 0.67 },                      // the Moon is a sphere here: nothing changes
+    { id: 2, body: 399, lonDeg: -116.89, latDeg: 35.43, altKm: 1.0 },       // a kilometer above the spheroid
+    { id: 3, body: 399, lonDeg: 35.5, latDeg: 31.5, altKm: -0.43 },         // below it
+    { id: 4, body: 399, lonDeg: 149.0, latDeg: -35.4 },                     // on it
+    { id: 5, body: 399, lonDeg: 10.0, latDeg: 78.9, altKm: 0.02 },          // far north
+  ];
+  const cut = async (geodeticSites) => slice({ ...structuredClone(base), name: 'geodetic', sites, geodeticSites }, kernelDir, resolve(root, 'test/blobs'));
+  const geo = await cut(true), plain = await cut(false);
+  // the geodetic blob with its flag cleared: the same site positions, read the planetocentric way
+  const cleared = Uint8Array.from(geo.blob); new DataView(cleared.buffer).setUint32(16, 1, true);
+  const flagsOf = (b) => new DataView(b.buffer, b.byteOffset).getUint32(16, true);
+  assert.equal(flagsOf(geo.blob), 3, 'rooted at the barycenter, and geodetic sites');
+  assert.equal(flagsOf(plain.blob), 1);
+  const lib = await load(geo.blob), old = await load(cleared, { skipCrc: true });
+  assert.equal(lib.initStatus, 0);
+  const radii = await spice.bodvrd('EARTH', 'RADII');
+  const f = (radii[0] - radii[2]) / radii[0];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const [g0, g1] = geo.report.windowEt;
+  const rnd = prng(2026);
+  const gPos = new Map(geo.report.ephem.map((q) => [q.target, q.maxPosErr]));
+  let worst = 0, shift = 0, n = 0;
+  for (const cfg of sites) {
+    const site = geo.report.sites.find((q) => q.id === cfg.id), p = site.position;
+    let up;
+    if (cfg.body === 399) {
+      // The slicer's position is the one CSPICE reads back as these geodetic coordinates.
+      const back = await spice.recgeo({ x: p[0], y: p[1], z: p[2] }, radii[0], f);
+      assert.ok(Math.abs(back.lat - (cfg.latDeg * Math.PI) / 180) < 1e-12 && Math.abs(back.lon - (cfg.lonDeg * Math.PI) / 180) < 1e-12, 'recgeo gives the latitude and longitude back');
+      assert.ok(Math.abs(back.alt - (cfg.altKm ?? 0)) < 1e-8, `recgeo gives the altitude back (${back.alt})`);
+      up = [Math.cos(back.lat) * Math.cos(back.lon), Math.cos(back.lat) * Math.sin(back.lon), Math.sin(back.lat)];
+    } else {
+      const r = Math.hypot(...p); up = p.map((v) => v / r);
+    }
+    let north = [-up[2] * up[0], -up[2] * up[1], 1 - up[2] * up[2]];
+    const rn = Math.hypot(...north); north = north.map((v) => v / rn);
+    const east = [north[1] * up[2] - north[2] * up[1], north[2] * up[0] - north[0] * up[2], north[0] * up[1] - north[1] * up[0]];
+    const frame = base.orient.find((o) => o.body === cfg.body).frame;
+    const orientErr = geo.report.orient.find((o) => o.body === cfg.body).maxErr;
+    // below the spheroid the library's normal is the gradient at the site: off by about f |h| / R
+    const below = (cfg.altKm ?? 0) < 0 ? (2 * f * -cfg.altKm) / radii[0] : 0;
+    for (let i = 0; i < 40; i++) {
+      const target = [10, 301, 399].filter((b) => b !== cfg.body)[i % 2];
+      const et = g0 + 2 + (g1 - g0 - 4) * rnd();
+      const got = lib.siteView(cfg.id, target, et, 0);
+      assert.equal(got.status, 0);
+      const r = (await truth(target, cfg.body, et, 0)).pos;
+      const m = await spice.pxform('J2000', frame, et);
+      const bf = [0, 1, 2].map((k) => m[3 * k] * r[0] + m[3 * k + 1] * r[1] + m[3 * k + 2] * r[2]);
+      const d = bf.map((v, k) => v - p[k]), range = Math.hypot(...d);
+      const el = Math.asin(dot(d, up) / range);
+      let az = Math.atan2(dot(d, east), dot(d, north)); if (az < 0) az += 2 * Math.PI;
+      const chain = (a, b) => { let sum = 0; const par = new Map(base.bodies.map((q) => [q.id, q.parent])); for (const start of [a, b]) for (let id = start; par.get(id) != null; id = par.get(id)) sum += gPos.get(id); return sum; };
+      const ab = (SLACK * chain(target, cfg.body) + 1e-9) / range + 4 * orientErr + 1e-11 + below;
+      assert.ok(Math.abs(got.el - el) <= ab, `site ${cfg.id}: elevation off by ${Math.abs(got.el - el)}, bound ${ab}`);
+      const daz = Math.abs(got.az - az);
+      assert.ok(Math.min(daz, 2 * Math.PI - daz) <= ab / Math.max(Math.cos(el), 1e-3) + 1e-9, `site ${cfg.id}: azimuth off by ${daz}`);
+      worst = Math.max(worst, Math.abs(got.el - el));
+      // the same site position without the flag is answered the planetocentric way
+      const was = old.siteView(cfg.id, target, et, 0);
+      if (cfg.body === 399) shift = Math.max(shift, Math.abs(was.el - got.el));
+      else assert.ok(Math.abs(was.el - got.el) < 1e-12, 'a sphere has one up');
+      n++;
+    }
+  }
+  assert.ok(shift > 1e-3 && shift < 4e-3, `planetocentric and geodetic elevations differ by up to ${shift} rad on the Earth (about the flattening)`);
+  console.log(`  ${n} views from ${sites.length} geodetic sites; worst elevation error ${worst.toExponential(2)} rad; the planetocentric answer would differ by up to ${(shift * 180 / Math.PI).toFixed(3)} degrees`);
+  // A geodetic site on a body with no radii, or with unequal equatorial radii, is refused by the slicer.
+  const bad = structuredClone(base); bad.geodeticSites = true; bad.bodies.find((b) => b.id === 399).radiiFrom = undefined;
+  await assert.rejects(slice(bad, kernelDir, resolve(root, 'test/blobs')), /geodetic sites need radii/);
+  // A header flag bit this library does not know is still refused.
+  const unknown = Uint8Array.from(geo.blob); new DataView(unknown.buffer).setUint32(16, 7, true);
+  assert.equal((await load(unknown, { skipCrc: true })).initStatus, 4);
+});

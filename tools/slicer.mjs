@@ -394,11 +394,29 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
   for (const o of config.orient ?? []) orient.push(await sliceOrient(spice, o, window));
   orient.sort((a, b) => a.body - b.body);
 
+  // Sites. By default latitude is planetocentric and the site sits on a sphere
+  // of the body's first radius, as it always has. With "geodeticSites": true
+  // at the top of the configuration, latitude is geodetic and altKm is height
+  // above the body's spheroid along its normal (SPICE's georec), and the blob's
+  // header says so (flag bit 1), which makes the library take "up" as that
+  // normal. The choice is one per blob, because the format has no room for one
+  // per site.
+  const geodetic = config.geodeticSites === true;
   const sites = [];
   for (const s of config.sites ?? []) {
     const body = bodies.find((b) => b.id === s.body);
-    const r = (body?.radii?.[0] ?? 0) + (s.altKm ?? 0);
-    const lon = (s.lonDeg * Math.PI) / 180, lat = (s.latDeg * Math.PI) / 180;
+    const lon = (s.lonDeg * Math.PI) / 180, lat = (s.latDeg * Math.PI) / 180, alt = s.altKm ?? 0;
+    if (geodetic) {
+      const radii = body?.radii;
+      if (!radii || !radii.every((v) => v > 0)) throw new Error(`site ${s.id}: geodetic sites need radii for body ${s.body}`);
+      if (radii[0] !== radii[1]) throw new Error(`site ${s.id}: geodetic latitude is defined on a spheroid, and body ${s.body} has unequal equatorial radii`);
+      const [a, , c] = radii;
+      const e2 = 1 - (c * c) / (a * a);
+      const n = a / Math.sqrt(1 - e2 * Math.sin(lat) ** 2); // the prime vertical radius
+      sites.push({ id: s.id, body: s.body, position: [(n + alt) * Math.cos(lat) * Math.cos(lon), (n + alt) * Math.cos(lat) * Math.sin(lon), (n * (1 - e2) + alt) * Math.sin(lat)] });
+      continue;
+    }
+    const r = (body?.radii?.[0] ?? 0) + alt;
     sites.push({ id: s.id, body: s.body, position: [r * Math.cos(lat) * Math.cos(lon), r * Math.cos(lat) * Math.sin(lon), r * Math.sin(lat)] });
   }
   sites.sort((a, b) => a.id - b.id);
@@ -439,7 +457,8 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
     prov.time = timeFit.map((f) => ({ base: f.base, ...(f.unix ? { unix: true } : { sclk: f.sclk }), pieces: f.pieces, toleranceS: f.toleranceSeconds, maxErrS: f.maxErrSeconds }));
   }
   const rootIsSsb = roots[0].id === 0;
-  const blob = buildBlob({ time, bodies, ephem, orient, sites, prov, flags: rootIsSsb ? 1 : 0, created, coverage });
+  const blob = buildBlob({ time, bodies, ephem, orient, sites, prov, flags: (rootIsSsb ? 1 : 0) | (geodetic && sites.length ? 2 : 0), created, coverage });
+  if (geodetic) report.geodeticSites = true;
   report.bytes = blob.length;
   report.coverageEt = coverage;
   return { blob, report };
