@@ -238,7 +238,31 @@ function buildBlob(model) {
   });
   const id = createHash('sha256').update(blob.subarray(64)).digest();
   blob.set(id.subarray(0, 8), 48);
-  v.setUint32(12, crc32(blob.subarray(16)), true);
+  return setChecksum(blob, model.checksum ?? 'crc32');
+}
+
+// ---- Fletcher-32 ------------------------------------------------------------
+
+// The other checksum a blob may carry (header flag bit 4): two sums modulo
+// 65535 over 16-bit little-endian words, starting at zero, the second sum in
+// the high half; an odd last byte is a word with a zero high byte.
+export function fletcher32(bytes) {
+  let a = 0, b = 0;
+  for (let i = 0; i < bytes.length; i += 2) {
+    a = (a + bytes[i] + 256 * (bytes[i + 1] ?? 0)) % 65535;
+    b = (b + a) % 65535;
+  }
+  return (b * 65536 + a) >>> 0;
+}
+
+// Rewrites a finished blob's checksum as the kind named ('crc32' or
+// 'fletcher32'), setting or clearing header flag bit 4 to match. Nothing else
+// changes, the blob identifier included: it covers bytes 64 to the end.
+export function setChecksum(blob, kind) {
+  if (kind !== 'crc32' && kind !== 'fletcher32') throw new Error(`checksum: "${kind}" is neither "crc32" nor "fletcher32"`);
+  const v = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+  v.setUint32(16, (v.getUint32(16, true) & ~16) | (kind === 'fletcher32' ? 16 : 0), true);
+  v.setUint32(12, (kind === 'fletcher32' ? fletcher32 : crc32)(blob.subarray(16)), true);
   return blob;
 }
 
@@ -511,9 +535,12 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
     prov.time = timeFit.map((f) => ({ base: f.base, ...(f.context === undefined ? {} : { context: f.context }), ...(f.unix ? { unix: true } : { sclk: f.sclk }), pieces: f.pieces, ...(f.gaps ? { gaps: f.gaps } : {}), toleranceS: f.toleranceSeconds, maxErrS: f.maxErrSeconds }));
   }
   const rootIsSsb = roots[0].id === 0;
-  const blob = buildBlob({ time, bodies, ephem, orient, sites, prov, flags: (rootIsSsb ? 1 : 0) | (geodetic && sites.length ? 2 : 0), created, coverage });
-  if (geodetic) report.geodeticSites = true;
+  // "checksum": "fletcher32" in the configuration writes that sum where the
+  // CRC-32 would go and says so in the header (flag bit 4).
+  const blob = buildBlob({ checksum: config.checksum, time, bodies, ephem, orient, sites, prov, flags: (rootIsSsb ? 1 : 0) | (geodetic && sites.length ? 2 : 0), created, coverage });
   if (breaksFound.length) report.breaksFound = breaksFound;
+  if (geodetic) report.geodeticSites = true;
+  if (config.checksum && config.checksum !== 'crc32') report.checksum = config.checksum;
   report.bytes = blob.length;
   report.coverageEt = coverage;
   return { blob, report };

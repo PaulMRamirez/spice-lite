@@ -480,6 +480,49 @@ static uint32_t crc32(const uint8_t *p, uint32_t n)
 #error "LITE_CRC_TABLES must be 0, 1, or 4"
 #endif
 
+/* ---- Fletcher-32 --------------------------------------------------------
+ *
+ * The other checksum a blob may carry (header flag bit 4): Fletcher's, over
+ * 16-bit little-endian words, two sums modulo 65535 that start at zero, the
+ * second in the high half of the result. An odd last byte counts as a word
+ * with a zero high byte. It needs no table and a few operations per word
+ * where the CRC needs a table lookup per byte, and it detects less: see
+ * SPEC.md, "Integrity".
+ *
+ * The sums are kept in 32 bits and reduced every 356 words: starting from
+ * sums below 65535, as many as 360 words of 65535 leave the second sum under
+ * 2^32, and 356 leaves a margin. The tail is added after a reduction. Words
+ * are taken two at a time from one 32-bit load, which assumes a little-endian
+ * host, as the rest of this file does. */
+static uint32_t fletcher32(const uint8_t *p, uint32_t n)
+{
+    uint32_t a = 0, b = 0;
+    uint32_t i = 0, full = n & ~3u;
+    while (i < full) {
+        uint32_t stop = full - i > 712u ? i + 712u : full;
+        for (; i < stop; i += 4u) {
+            uint32_t w;
+            __builtin_memcpy(&w, p + i, 4);
+            a += w & 0xFFFFu;
+            b += a;
+            a += w >> 16;
+            b += a;
+        }
+        a %= 65535u;
+        b %= 65535u;
+    }
+    if (i + 2u <= n) {
+        a += rd16(p + i);
+        b += a;
+        i += 2u;
+    }
+    if (i < n) {
+        a += p[i];
+        b += a;
+    }
+    return ((b % 65535u) << 16) | (a % 65535u);
+}
+
 /* ---- section accessors -------------------------------------------------- */
 
 static const uint8_t *body_at(int i) { return G.b + G.sec[SEC_BODY].off + (uint32_t)i * BODY_ENTRY; }
@@ -553,7 +596,7 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
             return 0;
         }
     }
-    if ((rd32(b + 16) & ~15u) != 0u && rd16(b + 6) <= 1u) {
+    if ((rd32(b + 16) & ~31u) != 0u && rd16(b + 6) <= 1u) {
         return 0; /* unknown flag bits in a minor version this reader knows */
     }
     nsec = rd16(b + 20);
@@ -728,7 +771,10 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
         }
     }
     if ((flags & LITE_INIT_SKIP_CRC) == 0u) {
-        if (crc32(b + 16, total - 16u) != rd32(b + 12)) {
+        /* header flag bit 4 says which checksum the field holds */
+        uint32_t sum = (rd32(b + 16) & 16u) != 0u ? fletcher32(b + 16, total - 16u)
+                                                  : crc32(b + 16, total - 16u);
+        if (sum != rd32(b + 12)) {
             return 0;
         }
     }

@@ -15,6 +15,17 @@ function crc32(bytes, from) {
   return ~crc >>> 0;
 }
 
+// Fletcher-32 over 16-bit little-endian words, for a blob whose header says it
+// carries that sum (flag bit 4).
+function fletcher32(bytes, from) {
+  let a = 0, b = 0;
+  for (let i = from; i < bytes.length; i += 2) {
+    a = (a + bytes[i] + 256 * (bytes[i + 1] ?? 0)) % 65535;
+    b = (b + a) % 65535;
+  }
+  return (b * 65536 + a) >>> 0;
+}
+
 const viewOf = (blob) => new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
 
 function timeDirectory(blob) {
@@ -74,7 +85,7 @@ export function withTimeTable(blob, entries, { fixCrc = true, headerFlags } = {}
   v.setUint32(dir.at + 12, entries.length, true);
   v.setUint32(8, out.length, true);
   v.setUint32(16, headerFlags ?? ((v.getUint32(16, true) & ~12) | (entries.some((t) => t.context !== undefined) ? 4 : 0) | (entries.some((t) => t.gap) ? 8 : 0)), true);
-  if (fixCrc) v.setUint32(12, crc32(out, 16), true);
+  if (fixCrc) v.setUint32(12, (v.getUint32(16, true) & 16 ? fletcher32 : crc32)(out, 16), true);
   return out;
 }
 

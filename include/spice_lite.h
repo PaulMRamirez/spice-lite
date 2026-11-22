@@ -53,7 +53,9 @@ extern "C" {
 #define LITE_INIT_SKIP_CRC 1u
 
 /* Checks the blob (magic, version, lengths, offsets, counts, tree shape, and
- * the CRC unless LITE_INIT_SKIP_CRC is set) and makes it the active blob. The
+ * the checksum unless LITE_INIT_SKIP_CRC is set) and makes it the active blob.
+ * The checksum is CRC-32, or Fletcher-32 in a blob whose header says so (flag
+ * bit 4); the flag skips either. The
  * memory must stay valid and unchanged while the blob is active, and should be
  * 8-byte aligned. Any supplied state is dropped. */
 LITE_API int lite_init(const void *blob, uint32_t len, uint32_t flags);

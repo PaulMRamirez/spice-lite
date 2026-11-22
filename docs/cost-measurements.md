@@ -17,8 +17,8 @@ The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped m
 <!-- full-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_init, checksum verified (90 KB blob) | 1,866,909 | 1,867 |
-| lite_init, checksum skipped | 3,036 | 4 |
+| lite_init, checksum verified (90 KB blob) | 1,866,895 | 1,867 |
+| lite_init, checksum skipped | 3,013 | 4 |
 | lite_host2et | 147 | 1 |
 | lite_fwtime2et | 206 | 1 |
 | lite_state, one segment (Moon from Earth-Moon barycenter), geometric | 1,758 | 2 |
@@ -45,8 +45,8 @@ The shipped module declares a single 64 KiB page. The `sun-earth-moon` blob (Sun
 <!-- flight-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_init, checksum verified (13 KB blob) | 275,080 | 276 |
-| lite_init, checksum skipped | 2,317 | 3 |
+| lite_init, checksum verified (13 KB blob) | 275,077 | 276 |
+| lite_init, checksum skipped | 2,305 | 3 |
 | lite_host2et | 118 | 1 |
 | lite_state, Moon from Earth, geometric | 3,452 | 4 |
 | lite_state, Sun from Earth, light time and stellar aberration | 6,124 | 7 |
@@ -61,14 +61,25 @@ Verifying the CRC-32 is the costly part of `lite_init`, and its cost trades agai
 <!-- crc-table:start -->
 | LITE_CRC_TABLES | Table size | Module size | Instructions per blob byte | lite_init on the 13 KB blob | Slices |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 64 bytes | 25,685 bytes | 34.0 | 449,247 | 450 |
-| 1 (default) | 1,024 bytes | 26,765 bytes | 20.8 | 275,080 | 276 |
-| 4 | 4,096 bytes | 29,787 bytes | 13.8 | 183,072 | 184 |
+| 0 | 64 bytes | 25,955 bytes | 34.0 | 449,244 | 450 |
+| 1 (default) | 1,024 bytes | 27,035 bytes | 20.8 | 275,077 | 276 |
+| 4 | 4,096 bytes | 30,057 bytes | 13.8 | 183,069 | 184 |
 <!-- crc-table:end -->
 
 The default is the middle row. A larger table buys less than it would on real hardware, because under an interpreter the cost is dominated by the number of operations, not by memory traffic.
 
-One experiment that is not in the library: replacing the CRC with running sums over 32-bit words (a Fletcher-style check) costs 5.8 instructions per byte with no table at all, which is 519,445 instructions on the 90 KB blob against 1,866,810 for the default CRC. It detects fewer error patterns than a CRC and would change the blob format, so it is recorded here as data for the open question in `SPEC.md`, not adopted.
+### The other checksum
+
+A blob may carry Fletcher-32 in place of the CRC-32, and says so in its header (flag bit 4; `"checksum": "fletcher32"` in the slicer's configuration). The same module verifies either. Fletcher's sum needs no table and a few operations per 16-bit word, where the CRC needs a table lookup per byte:
+
+<!-- checksum-table:start -->
+| Blob | Bytes | lite_init, CRC-32 | Per byte | Slices | lite_init, Fletcher-32 | Per byte | Slices | lite_init, checksum skipped |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 13 KB | 13,160 | 275,077 | 20.8 | 276 | 91,518 | 6.8 | 92 | 2,305 |
+| 90 KB | 89,840 | 1,866,895 | 20.8 | 1,867 | 612,300 | 6.8 | 613 | 3,013 |
+<!-- checksum-table:end -->
+
+It also detects less, which is why the CRC stays the default; `SPEC.md`, "Integrity", says what. The code for it adds 270 bytes to the module. Its sums are kept in 32 bits and reduced every 356 words; kept in 64 bits and reduced once at the end, which is simpler, the same loop measured 8.8 instructions per byte. An earlier experiment with plain running sums over 32-bit words measured 5.8 instructions per byte; that sum was not a standard one and is not what the library carries.
 
 ## Sub-points and occultation
 
