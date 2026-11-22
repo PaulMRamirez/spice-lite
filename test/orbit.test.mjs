@@ -244,6 +244,28 @@ test('breaks: a body cut into one segment per stretch, with no record across a b
   }
 });
 
+test('findBreaks: the slicer looks for burns and seams, finds none in a smooth orbit, and cuts where it does find one', { skip }, async () => {
+  const { slice } = await import('../tools/slicer.mjs');
+  // The synthetic orbiters have no events: asking changes nothing but the report.
+  const cfg = structuredClone(config);
+  for (const b of cfg.bodies) if (b.model === 'orbit') b.findBreaks = true;
+  const cut = await slice(cfg, kernelDir, resolve(root, 'test/blobs'));
+  assert.deepEqual(cut.report.breaksFound, orbiters.map((s) => ({ target: s.target, breaks: [] })).sort((x, y) => x.target - y.target));
+  assert.deepEqual(Buffer.from(cut.blob), Buffer.from(blob), 'the blob is the committed one, byte for byte');
+  // With thresholds far below the natural curvature the finder flags the whole
+  // orbit as one long event, and the slicer cuts at what it is given: every
+  // found time starts a segment.
+  const noisy = structuredClone(config);
+  noisy.bodies.find((b) => b.id === -9001).findBreaks = { stepSeconds: 600, positionKm: 1e-9, velocityKmS: 1e-12, mergeSeconds: 1e7, burnSeconds: 86400 };
+  const cut2 = await slice(noisy, kernelDir, resolve(root, 'test/blobs'));
+  const found = cut2.report.breaksFound[0].breaks;
+  assert.ok(found.length >= 2 && found[0].kind === 'start' && found.at(-1).kind === 'end');
+  const starts = new Set(cut2.report.ephem.filter((s) => s.target === -9001).map((s) => s.tStart));
+  for (const f of found) assert.ok(starts.has(f.et), `no segment starts at the break found at ${f.utc}`);
+  assert.deepEqual(cut2.report.coverageEt, [w0, w1]);
+  await assert.rejects(slice({ ...structuredClone(config), bodies: config.bodies.map((b) => (b.id === -9001 ? { ...b, findBreaks: { step: 1 } } : b)) }, kernelDir, resolve(root, 'test/blobs')), /unknown option "step"/);
+});
+
 test('200,000 corrupted orbiter blobs under the sanitizers: no faults', { skip: !existsSync(san) && 'build/driver-san not built' }, () => {
   const out = execFileSync(san, ['fuzz', blobPath, '200000', '20261121'], { encoding: 'utf8' });
   assert.match(out, /no faults/);

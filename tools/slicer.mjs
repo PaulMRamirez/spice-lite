@@ -19,6 +19,7 @@ import { dirname, resolve, basename } from 'node:path';
 import { createSpiceEngine } from 'cspice-wasm';
 import { sclkTimePieces, unixTimePieces } from './sclk-time.mjs';
 import { sliceOrbit } from './orbit-model.mjs';
+import { findBreaks, endingBefore } from './find-breaks.mjs';
 
 export const SLICER_VERSION = '0.1.0';
 
@@ -354,11 +355,20 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
 
   const ephem = [];
   let coverage = [...window];
+  const breaksFound = [];
   for (const b of bodies) {
     if (b.parentIndex === -1 || b.noSegment) continue;
     const w = b.window ? [await et(b.window.start), await et(b.window.stop)] : window;
-    const cut = (spec, span) => (b.model === 'orbit' ? sliceOrbit(spice, spec, span, b.parent) : sliceEphem(spice, spec, span, b.parent));
-    if (!b.breaks?.length) {
+    const cut = (spec, span, engine = spice) => (b.model === 'orbit' ? sliceOrbit(engine, spec, span, b.parent) : sliceEphem(engine, spec, span, b.parent));
+    // "findBreaks": look for burns and seams in the kernel and break there
+    // too (tools/find-breaks.mjs). true takes the defaults; an object
+    // overrides stepSeconds, positionKm, velocityKmS, or mergeSeconds.
+    let found = [];
+    if (b.findBreaks) {
+      found = await findBreaks(spice, b.id, b.parent, w, b.findBreaks === true ? {} : b.findBreaks);
+      breaksFound.push({ target: b.id, breaks: found });
+    }
+    if (!b.breaks?.length && !found.length) {
       const seg = await cut(b, w);
       ephem.push(seg);
       coverage = [Math.max(coverage[0], seg.tStart), Math.min(coverage[1], seg.tStart + seg.recordCount * seg.interval)];
@@ -370,9 +380,10 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
     // asked for that divides the stretch, nudged up by rounding errors only,
     // so that neighboring segments meet with no gap a query could fall into.
     const times = [];
-    for (const utc of b.breaks) times.push(await et(utc));
-    const inside = [...new Set(times)].filter((t) => t > w[0] && t < w[1]).sort((x, y) => x - y);
+    for (const utc of b.breaks ?? []) times.push(await et(utc));
+    let inside = [...new Set(times)].filter((t) => t > w[0] && t < w[1]);
     if (inside.length !== times.length) throw new Error(`body ${b.id}: every break must be a distinct time inside the body's window`);
+    inside = [...new Set([...inside, ...found.map((f) => f.et)])].sort((x, y) => x - y);
     const edges = [w[0], ...inside, w[1]];
     let first = Infinity, last = -Infinity;
     for (let i = 0; i + 1 < edges.length; i++) {
@@ -380,7 +391,9 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
       const n = Math.max(1, Math.round((z - a) / b.interval));
       let interval = (z - a) / n;
       while (a + n * interval < z) interval += interval * Number.EPSILON;
-      const seg = await cut({ ...b, interval }, [a, a + n * interval]);
+      // A stretch that ends at a break is fitted to the trajectory before the
+      // break only, its closing instant included (endingBefore).
+      const seg = await cut({ ...b, interval }, [a, a + n * interval], i + 2 < edges.length ? endingBefore(spice, z) : spice);
       if (seg.recordCount !== n) throw new Error(`body ${b.id}: a stretch between breaks was cut into ${seg.recordCount} records, not ${n}`);
       ephem.push(seg);
       first = Math.min(first, seg.tStart);
@@ -459,6 +472,7 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
   const rootIsSsb = roots[0].id === 0;
   const blob = buildBlob({ time, bodies, ephem, orient, sites, prov, flags: (rootIsSsb ? 1 : 0) | (geodetic && sites.length ? 2 : 0), created, coverage });
   if (geodetic) report.geodeticSites = true;
+  if (breaksFound.length) report.breaksFound = breaksFound;
   report.bytes = blob.length;
   report.coverageEt = coverage;
   return { blob, report };
