@@ -14,11 +14,11 @@ The point of doing this onboard is that the sequence carries no ground-computed 
 
 | Property | Value |
 | --- | --- |
-| Module size | 30,919 bytes: sequence, library, and blob together |
+| Module size | 32,156 bytes: sequence, library, and blob together |
 | Format | Strict WebAssembly 1.0 |
 | Imports | `fprime_v1`: `time`, `event`, `cmd`, `rsleep`, `exit`; nothing else |
 | Memory | One 64 KiB page, never grown |
-| SpaceWasm compiled IR | 26,726 bytes |
+| SpaceWasm compiled IR | 28,792 bytes |
 
 ## The run
 
@@ -28,9 +28,9 @@ Started with the clock at 14,400 seconds (four hours into the blob's window, whi
 
 | Phase | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| First cycle: `lite_init` with the checksum, then one decision | 282,333 | 283 |
-| Each later decision (clock, elevation, event, sleep) | at most 7,350 | 8 |
-| Whole run, 59 decisions over about 9.7 hours of spacecraft time | 706,422 | |
+| First cycle: `lite_init` with the checksum, then one decision | 282,379 | 283 |
+| Each later decision (clock, elevation, event, sleep) | at most 7,396 | 8 |
+| Whole run, 59 decisions over about 9.7 hours of spacecraft time | 709,136 | |
 
 ## How it is checked
 

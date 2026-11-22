@@ -47,7 +47,7 @@ Encoding rules:
 | 6 | 2 | `version_minor` | 1 in this draft |
 | 8 | 4 | `total_length` | Blob length in bytes |
 | 12 | 4 | `crc32` | CRC-32 (IEEE 802.3) of bytes 16 to the end |
-| 16 | 4 | `flags` | Bit 0: the body tree is rooted at the solar system barycenter (NAIF code 0). Other bits zero |
+| 16 | 4 | `flags` | Bit 0: the body tree is rooted at the solar system barycenter (NAIF code 0). Bit 1: the sites are geodetic (see SITE). Other bits zero |
 | 20 | 2 | `section_count` | Number of directory entries, at most 16 |
 | 22 | 2 | reserved | Zero |
 | 24 | 8 | `coverage_start` | Start of the span every segment covers |
@@ -242,6 +242,8 @@ A record holds 3(n+1) coefficients: right ascension of the pole, declination of 
 
 Sites need an ORIENT segment for their body.
 
+A site is a point; what the blob adds is which way is up there. With header flag bit 1 clear, up is the direction from the body's center through the site (planetocentric). With it set, the sites are geodetic: up is the outward normal of the body's ellipsoid through the site, as surveyed coordinates and SPICE's topocentric frames have it, and each site's body must have radii. On the Earth the two differ by up to 0.19 degrees. The flag covers every site in the blob, because the 32-byte entry has no room for one of its own. A library from before the flag existed rejects a blob that sets it, as it rejects any header flag bit it does not know, so a geodetic blob cannot be read the planetocentric way by mistake; blobs that do not set it are byte for byte what they were. The slicer sets the flag for a configuration with `"geodeticSites": true`, and then reads each site's `latDeg` as geodetic latitude and `altKm` as height above the body's spheroid along its normal (the body's two equatorial radii must be equal).
+
 ### PROV
 
 PROV is UTF-8 JSON, padded with spaces to an 8-byte boundary. It lists each source kernel with its SHA-256, the slicer version, the window, the fit errors per segment, and for TIME pieces derived from a spacecraft clock their tolerance and measured worst error. The flight library never reads it, and a mission may strip it before uplink (and must then rewrite the directory, the identifier, and the CRC).
@@ -294,7 +296,7 @@ A sequence in F Prime reads the clock with the host's `time` call, which writes 
 
 Two consequences of the physics are worth knowing. A light-time correction needs the target's segment to reach back by the light time, which is over an hour between Saturn and Earth. And stellar aberration turns the apparent direction by the observer's speed over c, so an error in the observer's velocity moves the apparent position by the range times that velocity error over c; with a spacecraft observer on a coarse predicted segment this dominates the error budget.
 
-**Site views.** Up is the direction from the body center through the site (planetocentric, not geodetic). North is the body's +Z axis with its component along up removed, east completes the right-handed set, azimuth runs from north toward east, and a site at a pole is refused.
+**Site views.** Up is the direction from the body center through the site (planetocentric), or, in a blob whose header says its sites are geodetic, the outward normal of the body's ellipsoid through the site. For a site on or above the ellipsoid that is the normal at the nearest surface point, found as for a sub-point; for a site below it, the gradient of the ellipsoid's equation at the site, which differs from the normal through it by about the flattening times the depth over the radius (about two tenths of a microradian for a site 430 m below the Earth's spheroid). A geodetic site on a body without radii returns unsupported. Against a topocentric frame built from CSPICE's `recgeo`, 200 views from five sites agree within the blob's declared errors. North is the body's +Z axis with its component along up removed, east completes the right-handed set, azimuth runs from north toward east, and a site at a pole is refused.
 
 **Sub-points and occultation.** Both calls are geometric (no light-time or stellar aberration correction in this version) and both use the supplied spacecraft state while it is fresh.
 
@@ -330,17 +332,17 @@ Measured on the 0.1 library (clang 18, `-O2`, `-mcpu=mvp`) and the test blob in 
 
 | Quantity | Target | Measured |
 | --- | --- | --- |
-| Module size | under 32 KiB | 26,274 bytes with the default checksum table (25,194 with the smallest, 29,296 with the largest) |
+| Module size | under 32 KiB | 26,601 bytes with the default checksum table (25,521 with the smallest, 29,623 with the largest) |
 | Host imports | none | none |
 | Declared memory | one 64 KiB page | one page; with a 13 KB Sun, Earth, Moon blob, 45,944 bytes of it stay free |
-| SpaceWasm compiled IR | under 64 KiB | 41,160 bytes |
-| SpaceWasm heap for the load | fits flight defaults | 43,974 bytes in 6 of 16 pages of 8,192 bytes |
+| SpaceWasm compiled IR | under 64 KiB | 41,686 bytes |
+| SpaceWasm heap for the load | fits flight defaults | 44,486 bytes in 6 of 16 pages of 8,192 bytes |
 | Time conversion | under 500 instructions | 109 with one TIME piece, 136 with two (186 from serialized F Prime time), at most 303 with 206 pieces and 421 with 4,096, the most a blob may hold (see TIME) |
 | Geometric state, one segment | under 2,500 instructions | 1,472 to 1,758 for a Chebyshev segment; 1,786 to 2,190 for a kind 4 orbit segment |
 | Geometric state, up to three segments | under 6,000 instructions | 3,598 (two), 4,744 (three) |
 | State with light time and stellar aberration | under 15,000 instructions | 6,124 to 9,838 |
 | Orientation | none set | 1,178 |
-| Site view | none set | 6,319 |
+| Site view | none set | 6,365 planetocentric; a geodetic site costs about 670 more above the spheroid and 180 more below it |
 | Sub-point | under 8,000 instructions | 2,564 to 2,643 from a supplied state; 4,878 to 6,734 over one to three segments |
 | Occultation | under 18,000 instructions | 6,075 to 7,610 when the bounding spheres or two round bodies settle it; 8,648 to 11,610 with one or two oriented ellipsoids; 10,631 to 15,311 when the search runs |
 | `lite_init`, checksum skipped | none set | 2,292 to 2,990 |
@@ -406,7 +408,7 @@ The slicer is not trusted to grade itself. It writes its fit errors into the blo
 4. **Compact orbit segment.** Kind 4 exists, with its error bounded by measurement like the other kinds. It has now been measured on real orbiter kernels (LRO, MRO, MAVEN; `docs/orbit-segment.md`), where a record of a day is off by kilometers, against meters on the synthetic orbiters, for want of terms at the central body's rotation. A ground-side prototype of such terms found them too many to be worth a larger record, so the record stays as it is: a coarse model at a day, a compact one (tens of meters) at one to three hours. Still open: how the fit holds at eccentricities above the 0.47 of MAVEN; whether elements should be referred to the central body's equator instead of J2000; finding maneuvers automatically (the slicer splits a body's records at the `breaks` a configuration names, which brings a day of LRO with two burns from 330 m to 15 m at one-hour records, but does not look for them); and whether the Kepler solve should be made cheaper still (the worst case is now 310 instructions under the one-segment ceiling, after the state path was shortened; it was 10).
 5. **Checksum.** CRC-32 is the draft choice and it dominates start-up: 20.8 interpreter instructions per byte with the default 1 KiB table, against two to three thousand instructions in total with the check skipped. A Fletcher-style sum over 32-bit words measured at 5.8 instructions per byte with no table, but detects fewer error patterns and would change the format. Whether to keep CRC-32, switch, or rely on uplink integrity is open.
 6. **Real memory configuration.** The one-page target assumes a mission will grant a sequence 64 KiB.
-7. **Geodetic sites, and what occultation leaves out.** Sub-points and occultation are implemented; geodetic sites are not. Occultation uses each body's ellipsoid when the blob orients it, at a cost of one orientation per body that is not round and about 1,600 instructions of algebra, and falls back to a sphere when it does not; `lite_occulted_shapes` reports which model each body got. Still open is the rule for which body is in front when two bodies nearly touch, the size the ellipsoid model adds to the module (4.6 KB, the largest single addition so far, of which the search for near-surface observers is 0.6 KB and the shared evaluation of the observer's path 1.0 KB), and whether either call needs a light-time correction.
+7. **What occultation leaves out.** Sub-points, occultation, and geodetic sites (one choice per blob; see SITE) are implemented. Occultation uses each body's ellipsoid when the blob orients it, at a cost of one orientation per body that is not round and about 1,600 instructions of algebra, and falls back to a sphere when it does not; `lite_occulted_shapes` reports which model each body got. Still open is the rule for which body is in front when two bodies nearly touch, the size the ellipsoid model adds to the module (4.6 KB, the largest single addition so far, of which the search for near-surface observers is 0.6 KB and the shared evaluation of the observer's path 1.0 KB), and whether either call needs a light-time correction.
 8. **Where the slicer lives.** It is in this repository for now; it may move to cspice-wasm.
 
 ## Notes on sources
