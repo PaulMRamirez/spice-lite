@@ -20,6 +20,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSpiceEngine } from 'cspice-wasm';
 import { sliceOrbit, osculating } from './orbit-model.mjs';
+import { findBreaks, endingBefore } from './find-breaks.mjs';
 import { readSclk, sclkTimePieces } from './sclk-time.mjs';
 import { tradeoffTable, updateDoc, dist } from './orbit-tradeoff.mjs';
 
@@ -127,6 +128,22 @@ for (const o of only ? [] : config.orbiters) {
   console.log(tables[`tradeoff-real-${o.key}`] + '\n');
 }
 
+// A body cut the way the slicer cuts one with breaks: one grid of records per
+// stretch between the times in "cuts".
+async function cutBetween(spice, o, cuts, want) {
+  let worst = 0, records = 0;
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const [a, z] = [cuts[i], cuts[i + 1]];
+    const n = Math.max(1, Math.round((z - a) / want));
+    let interval = (z - a) / n;
+    while (a + n * interval < z) interval += interval * Number.EPSILON;
+    const seg = await sliceOrbit(i + 2 < cuts.length ? endingBefore(spice, z) : spice, { id: o.body, interval }, [a, a + n * interval], o.center);
+    worst = Math.max(worst, seg.maxPosErr);
+    records += seg.recordCount;
+  }
+  return { worst, records };
+}
+
 // ---- a maneuver, with and without breaks ---------------------------------------
 
 // The day named by "burn", cut as one stretch and as the stretches between
@@ -137,24 +154,39 @@ for (const o of only && only !== '--burn' ? [] : config.orbiters.filter((q) => q
   const edges = [t0];
   for (const utc of o.burnBreaks) edges.push(await spice.str2et(utc));
   edges.push(t0 + DAY);
+  // The same day with the breaks the slicer finds on its own ("findBreaks").
+  const found = await findBreaks(spice, o.body, o.center, [t0, t0 + DAY]);
+  const foundEdges = [t0, ...found.map((f) => f.et), t0 + DAY];
+  const stretches = (cuts, want) => cutBetween(spice, o, cuts, want);
   const rows = [];
   for (const want of [1800, 3600, 3 * 3600, 6 * 3600]) {
     const whole = await sliceOrbit(spice, { id: o.body, interval: want }, [t0, t0 + DAY], o.center);
-    let worst = 0, records = 0;
-    for (let i = 0; i + 1 < edges.length; i++) {
-      const [a, z] = [edges[i], edges[i + 1]];
-      const n = Math.max(1, Math.round((z - a) / want));
-      let interval = (z - a) / n;
-      while (a + n * interval < z) interval += interval * Number.EPSILON;
-      const seg = await sliceOrbit(spice, { id: o.body, interval }, [a, a + n * interval], o.center);
-      worst = Math.max(worst, seg.maxPosErr);
-      records += seg.recordCount;
-    }
-    rows.push(`| ${want >= 3600 ? `${want / 3600} h` : `${want / 60} min`} | ${whole.recordCount} | ${dist(whole.maxPosErr)} | ${records} | ${dist(worst)} |`);
+    const given = await stretches(edges, want), auto = await stretches(foundEdges, want);
+    rows.push(`| ${want >= 3600 ? `${want / 3600} h` : `${want / 60} min`} | ${whole.recordCount} | ${dist(whole.maxPosErr)} | ${given.records} | ${dist(given.worst)} | ${auto.records} | ${dist(auto.worst)} |`);
   }
-  tables['burn-real'] = [`**${o.label}, the day from ${o.burn.slice(0, 10)}**, which holds two burns of about 110 seconds each (${o.burnBreaks.map((b) => b.slice(11)).join(', ')} UTC are their starts and ends).`, '',
-    '| Record length asked for | Records, unbroken | Worst position error, unbroken | Records, with breaks | Worst position error, with breaks |', '| --- | --- | --- | --- | --- |', ...rows].join('\n');
+  tables['burn-real'] = [`**${o.label}, the day from ${o.burn.slice(0, 10)}**, which holds two burns of about 110 seconds each (${o.burnBreaks.map((b) => b.slice(11)).join(', ')} UTC are their starts and ends, given by hand). Left to itself the slicer finds ${found.length} breaks in the day: ${found.map((f) => `${f.utc.slice(11, 19)} (${f.kind})`).join(', ')}.`, '',
+    '| Record length asked for | Records, unbroken | Worst position error, unbroken | Records, breaks given | Worst position error, breaks given | Records, breaks found | Worst position error, breaks found |', '| --- | --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
   console.log(tables['burn-real'] + '\n');
+}
+
+// ---- seams, with and without the breaks the slicer finds -------------------------
+
+// A stretch of a reconstructed kernel that holds seams between orbit solutions
+// ("seams": where it starts and how many days), cut unbroken and at the breaks
+// findBreaks reports.
+for (const o of only && only !== '--burn' ? [] : config.orbiters.filter((q) => q.seams)) {
+  const spice = await engine(o.kernels);
+  const t0 = await spice.str2et(o.seams.start), t1 = t0 + o.seams.days * DAY;
+  const found = await findBreaks(spice, o.body, o.center, [t0, t1]);
+  const rows = [];
+  for (const want of [3600, 3 * 3600, 6 * 3600]) {
+    const whole = await sliceOrbit(spice, { id: o.body, interval: want }, [t0, t1], o.center);
+    const auto = await cutBetween(spice, o, [t0, ...found.map((f) => f.et), t1], want);
+    rows.push(`| ${want / 3600} h | ${whole.recordCount} | ${dist(whole.maxPosErr)} | ${auto.records} | ${dist(auto.worst)} |`);
+  }
+  tables['seam-real'] = [`**${o.label}, ${o.seams.days} days from ${o.seams.start.slice(0, 10)}.** The slicer finds ${found.length} breaks, all steps: ${found.map((f) => `${f.utc.slice(0, 19).replace('T', ' ')} (${dist(2 * f.positionKm)})`).join(', ')}; the distance is the step in position there.`, '',
+    '| Record length asked for | Records, unbroken | Worst position error, unbroken | Records, breaks found | Worst position error, breaks found |', '| --- | --- | --- | --- | --- |', ...rows].join('\n');
+  console.log(tables['seam-real'] + '\n');
 }
 
 // ---- clocks -------------------------------------------------------------------

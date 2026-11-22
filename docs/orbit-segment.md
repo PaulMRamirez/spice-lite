@@ -160,20 +160,40 @@ What this means for use. As a compact long-arc ephemeris for a real low orbiter,
 
 ### A maneuver, and what breaks do for it
 
-A record that spans a burn fits to kilometers. The slicer now takes `"breaks"` on a body: times that no record may span. The body is cut into one segment per stretch between them, each with its own grid of records, and the segments meet with no gap. The times are the mission's to supply; here they were read off the kernel as the start and end of each burn. `node tools/real-kernels.mjs --burn` made this table.
+A record that spans a burn fits to kilometers. The slicer now takes `"breaks"` on a body: times that no record may span. The body is cut into one segment per stretch between them, each with its own grid of records, and the segments meet with no gap. The times can be given by hand (here they were read off the kernel as the start and end of each burn), or the slicer can look for them: with `"findBreaks": true` on a body it scans the kernel for burns and seams and breaks there too ("Finding the breaks" below). `node tools/real-kernels.mjs --burn` made these tables.
 
 <!-- burn-real:start -->
-**Lunar Reconnaissance Orbiter, the day from 2010-01-13**, which holds two burns of about 110 seconds each (16:50:50, 16:52:40, 19:41:55, 19:43:45 UTC are their starts and ends).
+**Lunar Reconnaissance Orbiter, the day from 2010-01-13**, which holds two burns of about 110 seconds each (16:50:50, 16:52:40, 19:41:55, 19:43:45 UTC are their starts and ends, given by hand). Left to itself the slicer finds 8 breaks in the day: 16:50:00 (start), 16:52:00 (during), 16:54:00 (end), 19:41:00 (start), 19:42:45 (during), 19:44:30 (during), 19:46:15 (during), 19:48:00 (end).
 
-| Record length asked for | Records, unbroken | Worst position error, unbroken | Records, with breaks | Worst position error, with breaks |
-| --- | --- | --- | --- | --- |
-| 30 min | 48 | 204 m | 51 | 7.7 m |
-| 1 h | 24 | 330 m | 26 | 15 m |
-| 3 h | 8 | 569 m | 10 | 79 m |
-| 6 h | 4 | 23 km | 7 | 141 m |
+| Record length asked for | Records, unbroken | Worst position error, unbroken | Records, breaks given | Worst position error, breaks given | Records, breaks found | Worst position error, breaks found |
+| --- | --- | --- | --- | --- | --- | --- |
+| 30 min | 48 | 204 m | 51 | 7.7 m | 54 | 7.7 m |
+| 1 h | 24 | 330 m | 26 | 15 m | 30 | 14 m |
+| 3 h | 8 | 569 m | 10 | 79 m | 14 | 78 m |
+| 6 h | 4 | 23 km | 7 | 141 m | 11 | 143 m |
 <!-- burn-real:end -->
 
-With breaks at the burns the day fits as a day without a maneuver does (compare 24 m at one hour and 184 m at six in LRO's table above): 15 m at one-hour records where unbroken records give 330 m, and 141 m at six hours where they give 23 km. The cost is two or three more records, 320 to 480 bytes, because each burn becomes a short segment of its own. What breaks do not do is find the maneuvers: the slicer cuts where it is told, and a break in the wrong place helps nothing. Seams between orbit solutions in a reconstructed kernel can be given as breaks in the same way.
+With breaks at the burns the day fits as a day without a maneuver does (compare 24 m at one hour and 184 m at six in LRO's table above): 15 m at one-hour records where unbroken records give 330 m, and 141 m at six hours where they give 23 km. The cost is two or three more records, 320 to 480 bytes, because each burn becomes a short segment of its own. The breaks the slicer finds do as well as the ones given by hand, for a few records more: it brackets each burn more widely than the hand times do (it flags the minutes of disturbed motion after each burn too) and cuts that bracket into records of at most two minutes.
+
+### Finding the breaks
+
+`tools/find-breaks.mjs` needs no force model and no knowledge of the mission. It samples the trajectory every 10 seconds and compares each sample with the cubic through its four neighbors, in position and in velocity. On a smooth orbit the cubic is good to millimeters and hundredths of a millimeter per second (the natural miss in position is about 5 mm on MRO and 14 mm on a circular low Earth orbit); a sample that misses by more than 0.2 m or 2 mm/s has something within two steps of it. Flagged samples within two minutes of each other are one event. An event as narrow as one jump is a step, and is then located by bisection to the exact instant: on MAVEN and MRO the times found are the first representable instant of the new orbit solution, checked by reading the kernel one instant earlier and finding the whole step between the two. A wider event is a burn, which gets a break before, after, and every two minutes inside. The step, the two thresholds, the merge window, and the longest record under thrust can each be set (`"findBreaks": { "stepSeconds": ..., "positionKm": ..., "velocityKmS": ..., "mergeSeconds": ..., "burnSeconds": ... }`), and the slicer's report lists every break found with its kind and the size of what was seen, so a mission can review them.
+
+A stretch that ends at a break is fitted to the trajectory before the break only. The fit samples its closing instant, and at a seam that instant already belongs to the next solution, so the slicer reads it one representable instant earlier. Before this was done, the last record before a 102 m seam was measured at 100 m for that one sample.
+
+<!-- seam-real:start -->
+**MAVEN, 4 days from 2015-01-15.** The slicer finds 4 breaks, all steps: 2015-01-15 19:18:52 (92 m), 2015-01-17 00:59:59 (4.8 m), 2015-01-17 18:59:59 (21 m), 2015-01-18 19:14:59 (102 m); the distance is the step in position there.
+
+| Record length asked for | Records, unbroken | Worst position error, unbroken | Records, breaks found | Worst position error, breaks found |
+| --- | --- | --- | --- | --- |
+| 1 h | 96 | 73 m | 96 | 6.1 m |
+| 3 h | 32 | 56 m | 32 | 13 m |
+| 6 h | 16 | 978 m | 16 | 1.2 km |
+<!-- seam-real:end -->
+
+Seams matter at short records and stop mattering at long ones. MAVEN's reconstructed kernel steps by 5 to 102 m about once a day; at one-hour records, breaking there brings the worst error from 73 m to 6.1 m for no more records, and at six hours the fit's own error (about a kilometer on this orbit) hides the seams entirely.
+
+What the finder does not do. It cannot see an event within 20 seconds of either end of a body's window. It does not see thrust below about 0.6 mm/s^2 at the default step (the miss a change in acceleration causes is a third of that change times the step), which rules out electric propulsion; a longer step raises the sensitivity and the natural floor together. A long steady burn is smooth in its middle, so it shows as two steps where the thrust turns on and off, and the stretch between is cut at the body's ordinary record length, not at two minutes. It is not a maneuver detector in the operational sense: on LRO it also flags small events of 5 to 8 mm/s lasting a minute or two (10:47 on 12 January 2010, 11:39 on 14 January), which may be momentum unloads or artifacts of the orbit reconstruction; breaking at one costs a record and harms nothing. And it has been run on three kernels.
 
 ### What a Chebyshev segment costs on the same orbits, within the cost ceiling
 
@@ -271,7 +291,7 @@ The wider record and the new solve grew the module by 411 bytes with the author'
 - **Terms at the body's rotation.** Tried as a prototype ("Would terms at the body's rotation rescue kind 4?" above) and not recommended: the terms that matter are many, and a record large enough to carry them is no better than shorter records of the present one. What the prototype leaves unexplained is MRO at one day, which no set of terms tried brings under 3 km.
 - **Long Chebyshev records within the ceiling.** The cost of kind 1 is now measured at every even degree to 40, and the ceiling allows degree 22 to 24. The comparison held to that degree stops at records of one orbit; records of two to four orbits at degree 22 or below have not been tried on the real orbiters.
 - **A real low Earth orbiter.** None of the three real cases is at the Earth, because NAIF does not publish one; the Earth's tesseral terms are several hundred times smaller than J2 (at Mars the ratio is about thirty), so the Earth should sit between the synthetic and Mars columns. That is a guess.
-- **Finding maneuvers and seams.** The slicer splits records at the `breaks` a configuration names ("A maneuver, and what breaks do for it" above) but does not look for them. `tools/real-kernels.mjs` has the two tests used here (a step in orbit-mean semi-major axis, and a position step against a Hermite prediction); neither is part of the slicer.
+- **Finding maneuvers and seams, beyond three kernels.** The slicer now finds them on request ("Finding the breaks" above), with the limits listed there: low thrust, the middle of a long steady burn, and the ends of the window are not seen, and the thresholds were set from LRO, MRO, and MAVEN only.
 - **Higher eccentricity.** The fit has been measured at eccentricities of 0.3 (synthetic) and 0.47 (MAVEN). The evaluation is tested up to 0.9 for cost and convergence, not for accuracy.
 - **Reference plane.** Elements are referred to J2000. For an orbiter of a body whose equator is tilted from J2000 the node and inclination both drift as the orbit plane precesses about the body's pole; straight-line rates follow that over a day or two (the lunar case above does exactly this), but a per-segment pole, or quadratic terms for the plane, would hold longer.
 - **Conditioning of the fit.** On a near-circular orbit the first harmonics are nearly interchangeable with small changes to the eccentricity vector, the inclination, and the node. The damped least-squares fit copes, and the declared error is measured after the fact either way, but records shorter than an orbit fit worse than they should.

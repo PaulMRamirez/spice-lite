@@ -32,7 +32,7 @@ Under the SpaceWasm interpreter a geometric state costs about 1,500 to 2,000 ins
 
 ## Layout
 
-`include/spice_lite.h` and `src/spice_lite.c` are the whole flight library. `tools/slicer.mjs` is the reference slicer and `tools/make-vectors.mjs` regenerates the exactness vectors. `tools/real-kernels.mjs` and `tools/real-orbit-study.mjs` measure the orbit segment and the clock mapping on real mission kernels, which are fetched on demand and never committed (`docs/real-kernels.md`). `test/` holds the WebAssembly harness, the native driver, six test blobs with their configurations and reports (a large one with a spacecraft trajectory and a small flight-shaped one), and the test tiers. `scripts/` holds the two build scripts, the strict Wasm 1.0 checker, and the cost measurement, whose SpaceWasm host harness is in `bench/spacewasm-host`.
+`include/spice_lite.h` and `src/spice_lite.c` are the whole flight library. `tools/slicer.mjs` is the reference slicer (with `tools/find-breaks.mjs`, which finds the burns and seams no record should span) and `tools/make-vectors.mjs` regenerates the exactness vectors. `tools/real-kernels.mjs` and `tools/real-orbit-study.mjs` measure the orbit segment and the clock mapping on real mission kernels, which are fetched on demand and never committed (`docs/real-kernels.md`). `test/` holds the WebAssembly harness, the native driver, six test blobs with their configurations and reports (a large one with a spacecraft trajectory and a small flight-shaped one), and the test tiers. `scripts/` holds the two build scripts, the strict Wasm 1.0 checker, and the cost measurement, whose SpaceWasm host harness is in `bench/spacewasm-host`.
 
 ## Building and testing
 
