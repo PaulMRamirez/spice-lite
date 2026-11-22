@@ -8,34 +8,34 @@ What each spice-lite call costs when the library runs as a guest of NASA JPL's S
 
 The instruction is a SpaceWasm IR instruction, the unit its fuel counts, not a WebAssembly bytecode instruction. One WasmSequencer slice is 1,000 of them by default, so the last column is how many sequencer cycles a call spans.
 
-The counts are deterministic for a given compiler build. CI reruns the measurement and fails if any call exceeds its ceiling, returns an error, or if the shipped module needs more than its one page. The numbers below are from the author's clang 18 build; the CI runner's build runs 1 to 3% higher and is 7% larger (26,274 bytes). Both builds use clang 18.1.3; the difference is that clang runs binaryen's `wasm-opt` on the linked module when it finds it on the PATH, which the author's machine has and the CI runner does not. To reproduce the CI figures on a machine that has `wasm-opt`, take it off the PATH for the build.
+The counts are deterministic for a given compiler build. CI reruns the measurement and fails if any call exceeds its ceiling, returns an error, or if the shipped module needs more than its one page. The numbers below are from clang 18.1.3 and its `wasm-ld`, and are the ones CI measures. They used to differ between machines: asked to link, clang runs binaryen's `wasm-opt` on the module when it finds one on the PATH, which made the module 7% smaller and the counts 1 to 3% lower on a machine that had it than on the CI runner, which did not. `scripts/build-wasm.sh` and `scripts/build-sequence.sh` now compile and link as two steps, so `wasm-opt` is never run and the module is byte for byte the same wherever it is built (the direct link was checked against the old CI build: identical). A mission that wants the smaller module can run `wasm-opt` itself as a deliberate, pinned step; this project does not, so that its figures need nothing beyond the compiler to reproduce.
 
 ## Every call, on the large test blob
 
-The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 24,552 bytes; compiled IR 40,538 bytes.
+The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 26,274 bytes; compiled IR 41,160 bytes.
 
 <!-- full-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_init, checksum verified (90 KB blob) | 1,866,874 | 1,867 |
-| lite_init, checksum skipped | 3,000 | 3 |
-| lite_host2et | 137 | 1 |
-| lite_fwtime2et | 188 | 1 |
-| lite_state, one segment (Moon from Earth-Moon barycenter), geometric | 1,705 | 2 |
-| lite_state, two segments (Moon from Earth), geometric | 3,497 | 4 |
-| lite_state, three segments (Sun from Earth), geometric | 4,609 | 5 |
-| lite_state, Sun from Earth, light time | 6,034 | 7 |
-| lite_state, Sun from Earth, light time and stellar aberration | 6,135 | 7 |
-| lite_state, Moon from Earth, light time and stellar aberration | 9,557 | 10 |
-| lite_state, spacecraft from Saturn barycenter (predicted), geometric | 1,427 | 2 |
-| lite_state, Earth from spacecraft, light time and stellar aberration | 8,880 | 9 |
-| lite_orient, Moon | 1,170 | 2 |
-| lite_site_view, Sun from a lunar site | 6,167 | 7 |
+| lite_init, checksum verified (90 KB blob) | 1,866,863 | 1,867 |
+| lite_init, checksum skipped | 2,990 | 3 |
+| lite_host2et | 136 | 1 |
+| lite_fwtime2et | 186 | 1 |
+| lite_state, one segment (Moon from Earth-Moon barycenter), geometric | 1,758 | 2 |
+| lite_state, two segments (Moon from Earth), geometric | 3,598 | 4 |
+| lite_state, three segments (Sun from Earth), geometric | 4,744 | 5 |
+| lite_state, Sun from Earth, light time | 6,235 | 7 |
+| lite_state, Sun from Earth, light time and stellar aberration | 6,336 | 7 |
+| lite_state, Moon from Earth, light time and stellar aberration | 9,838 | 10 |
+| lite_state, spacecraft from Saturn barycenter (predicted), geometric | 1,472 | 2 |
+| lite_state, Earth from spacecraft, light time and stellar aberration | 9,157 | 10 |
+| lite_orient, Moon | 1,178 | 2 |
+| lite_site_view, Sun from a lunar site | 6,319 | 7 |
 | lite_set_state | 258 | 1 |
-| lite_state, spacecraft from Saturn barycenter (supplied), geometric | 453 | 1 |
-| lite_state, spacecraft from Earth (supplied), geometric | 4,536 | 5 |
-| lite_state_gap | 1,471 | 2 |
-| lite_clear_state | 8 | 1 |
+| lite_state, spacecraft from Saturn barycenter (supplied), geometric | 465 | 1 |
+| lite_state, spacecraft from Earth (supplied), geometric | 4,672 | 5 |
+| lite_state_gap | 1,517 | 2 |
+| lite_clear_state | 7 | 1 |
 <!-- full-table:end -->
 
 ## The flight-shaped case: one page
@@ -45,13 +45,13 @@ The shipped module declares a single 64 KiB page. The `sun-earth-moon` blob (Sun
 <!-- flight-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_init, checksum verified (13 KB blob) | 275,063 | 276 |
-| lite_init, checksum skipped | 2,299 | 3 |
-| lite_host2et | 110 | 1 |
-| lite_state, Moon from Earth, geometric | 3,359 | 4 |
-| lite_state, Sun from Earth, light time and stellar aberration | 5,937 | 6 |
-| lite_orient, Moon | 1,170 | 2 |
-| lite_site_view, Sun from a lunar site | 6,009 | 7 |
+| lite_init, checksum verified (13 KB blob) | 275,055 | 276 |
+| lite_init, checksum skipped | 2,292 | 3 |
+| lite_host2et | 109 | 1 |
+| lite_state, Moon from Earth, geometric | 3,452 | 4 |
+| lite_state, Sun from Earth, light time and stellar aberration | 6,124 | 7 |
+| lite_orient, Moon | 1,178 | 2 |
+| lite_site_view, Sun from a lunar site | 6,151 | 7 |
 <!-- flight-table:end -->
 
 ## Checksum options
@@ -61,9 +61,9 @@ Verifying the CRC-32 is the costly part of `lite_init`, and its cost trades agai
 <!-- crc-table:start -->
 | LITE_CRC_TABLES | Table size | Module size | Instructions per blob byte | lite_init on the 13 KB blob | Slices |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 64 bytes | 23,480 bytes | 34.0 | 449,230 | 450 |
-| 1 (default) | 1,024 bytes | 24,552 bytes | 20.8 | 275,063 | 276 |
-| 4 | 4,096 bytes | 27,569 bytes | 13.8 | 183,055 | 184 |
+| 0 | 64 bytes | 25,194 bytes | 34.0 | 449,222 | 450 |
+| 1 (default) | 1,024 bytes | 26,274 bytes | 20.8 | 275,055 | 276 |
+| 4 | 4,096 bytes | 29,296 bytes | 13.8 | 183,047 | 184 |
 <!-- crc-table:end -->
 
 The default is the middle row. A larger table buys less than it would on real hardware, because under an interpreter the cost is dominated by the number of operations, not by memory traffic.
@@ -72,31 +72,31 @@ One experiment that is not in the library: replacing the CRC with running sums o
 
 ## Sub-points and occultation
 
-`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module, and held to ceilings of 8,000 and 18,000 instructions: the script fails if a row exceeds its ceiling. The ceilings are the largest measured rows (6,597 and 15,121) with about a fifth of headroom, enough for the CI compiler's 3% and for small changes, not for a blob with deeper trees or higher degrees than these. The sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in; modeling bodies as ellipsoids in `lite_occulted` added 4,601 bytes to the module and 8,180 bytes to its compiled IR on its own branch (the combined library was 24,083 and 39,776 when the two were merged), and the heap `spacewasm validate` reports for the load went from 32,550 bytes in 4 pages to 41,086 in 6 of 16.
+`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module, and held to ceilings of 8,000 and 18,000 instructions: the script fails if a row exceeds its ceiling. The ceilings are the largest measured rows (6,734 and 15,311) with about a sixth of headroom, enough for small changes, not for a blob with deeper trees or higher degrees than these. The sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in; modeling bodies as ellipsoids in `lite_occulted` added 4,601 bytes to the module and 8,180 bytes to its compiled IR on its own branch (the combined library was 24,083 and 39,776 when the two were merged, in a build that `wasm-opt` had been through), and the heap `spacewasm validate` reports for the load went from 32,550 bytes in 4 pages to 41,086 in 6 of 16.
 
 <!-- geometry-table:start -->
 | Call | Instructions | Slices of 1,000 |
 | --- | --- | --- |
-| lite_sub_point, Moon (a sphere) from Earth | 5,225 | 6 |
-| lite_sub_point, Earth (a spheroid) from the Moon | 5,392 | 6 |
-| lite_sub_point, triaxial stand-in from Earth, three segments | 6,597 | 7 |
-| lite_sub_point, Earth from a supplied spacecraft state 900 km up | 2,615 | 3 |
-| lite_occulted, triaxial stand-in by Earth from a supplied state (two ellipsoids, none) | 5,947 | 6 |
-| lite_sub_point, triaxial stand-in from a supplied spacecraft state 10 km up | 2,536 | 3 |
-| lite_occulted, Sun by the Moon from a supplied spacecraft state (two spheres, none) | 7,428 | 8 |
-| lite_occulted, Earth by the triaxial stand-in from a supplied state (two ellipsoids) | 5,935 | 6 |
-| lite_occulted, Earth by the Moon from the Sun (partial) | 9,688 | 10 |
-| lite_occulted, Sun by Earth from the Moon (full) | 9,728 | 10 |
-| lite_occulted, Earth by the Sun from the Moon (the Sun is behind) | 8,598 | 9 |
-| lite_occulted, Sun by Earth from the Moon, far apart in the sky (none) | 7,222 | 8 |
-| lite_occulted, Sun by Earth from 2 m above its surface, Sun below the horizon (full) | 8,464 | 9 |
-| lite_occulted, Sun by Earth from 2 m above its surface, lower limb on the horizon (partial, by search) | 10,437 | 11 |
-| lite_occulted, Sun by Earth from 2 m above its surface, Sun just clear of the horizon (none, by the full search) | 14,830 | 15 |
-| lite_sub_point, Saturn (a spheroid) from Cassini (predicted) | 4,772 | 5 |
-| lite_occulted, Sun by Saturn from Cassini (full) | 8,611 | 9 |
-| lite_occulted, Earth by Saturn from Cassini (two ellipsoids, full) | 11,340 | 12 |
-| lite_occulted, Sun by Saturn from Cassini, six hours earlier (none) | 6,185 | 7 |
-| lite_occulted, a Moon with unequal radii by Earth from 2 m above its surface, just clear of the horizon (two ellipsoids, none, by the full search) | 15,121 | 16 |
+| lite_sub_point, Moon (a sphere) from Earth | 5,334 | 6 |
+| lite_sub_point, Earth (a spheroid) from the Moon | 5,504 | 6 |
+| lite_sub_point, triaxial stand-in from Earth, three segments | 6,734 | 7 |
+| lite_sub_point, Earth from a supplied spacecraft state 900 km up | 2,643 | 3 |
+| lite_occulted, triaxial stand-in by Earth from a supplied state (two ellipsoids, none) | 6,092 | 7 |
+| lite_sub_point, triaxial stand-in from a supplied spacecraft state 10 km up | 2,564 | 3 |
+| lite_occulted, Sun by the Moon from a supplied spacecraft state (two spheres, none) | 7,610 | 8 |
+| lite_occulted, Earth by the triaxial stand-in from a supplied state (two ellipsoids) | 6,075 | 7 |
+| lite_occulted, Earth by the Moon from the Sun (partial) | 9,909 | 10 |
+| lite_occulted, Sun by Earth from the Moon (full) | 9,950 | 10 |
+| lite_occulted, Earth by the Sun from the Moon (the Sun is behind) | 8,800 | 9 |
+| lite_occulted, Sun by Earth from the Moon, far apart in the sky (none) | 7,407 | 8 |
+| lite_occulted, Sun by Earth from 2 m above its surface, Sun below the horizon (full) | 8,648 | 9 |
+| lite_occulted, Sun by Earth from 2 m above its surface, lower limb on the horizon (partial, by search) | 10,631 | 11 |
+| lite_occulted, Sun by Earth from 2 m above its surface, Sun just clear of the horizon (none, by the full search) | 15,056 | 16 |
+| lite_sub_point, Saturn (a spheroid) from Cassini (predicted) | 4,878 | 5 |
+| lite_occulted, Sun by Saturn from Cassini (full) | 8,833 | 9 |
+| lite_occulted, Earth by Saturn from Cassini (two ellipsoids, full) | 11,610 | 12 |
+| lite_occulted, Sun by Saturn from Cassini, six hours earlier (none) | 6,372 | 7 |
+| lite_occulted, a Moon with unequal radii by Earth from 2 m above its surface, just clear of the horizon (two ellipsoids, none, by the full search) | 15,311 | 16 |
 <!-- geometry-table:end -->
 
 A sub-point is a geometric state, an orientation, and the nearest-point solution: from a supplied state, where the state costs almost nothing, the whole call is about 2,900 instructions, of which the orientation is 1,170 and the Newton iteration with its two arctangents the rest. The shape matters little: the triaxial case costs no more than the spheroid.
@@ -114,12 +114,12 @@ Against earlier drafts, which modeled both bodies as spheres at 7,040 to 9,372 i
 <!-- time-table:start -->
 | TIME pieces | Blob | Readings | Fewest instructions | Most instructions | Held to 500 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | sun-earth-moon (committed) | 4 | 79 | 110 | yes |
-| 6 | sclk-drift (committed; the synthetic drifting clock to a microsecond) | 15 | 116 | 165 | yes |
-| 26 | the first 26 clock pieces of sclk-many (30 days to 0.1 microseconds) | 55 | 170 | 221 | yes |
-| 206 | sclk-many (committed; 203 clock pieces and three of other bases) | 416 | 251 | 304 | yes |
-| 256 | synthetic table of 256 pieces (the slicer's default limit for one clock) | 515 | 278 | 318 | yes |
-| 4,096 | synthetic table of 4,096 pieces (the most the format allows) | 517 | 386 | 422 | yes |
+| 1 | sun-earth-moon (committed) | 4 | 78 | 109 | yes |
+| 6 | sclk-drift (committed; the synthetic drifting clock to a microsecond) | 15 | 115 | 164 | yes |
+| 26 | the first 26 clock pieces of sclk-many (30 days to 0.1 microseconds) | 55 | 169 | 220 | yes |
+| 206 | sclk-many (committed; 203 clock pieces and three of other bases) | 416 | 250 | 303 | yes |
+| 256 | synthetic table of 256 pieces (the slicer's default limit for one clock) | 515 | 277 | 317 | yes |
+| 4,096 | synthetic table of 4,096 pieces (the most the format allows) | 517 | 385 | 421 | yes |
 <!-- time-table:end -->
 
 A conversion costs about 85 instructions plus 27 for each probe, and a table of n pieces takes at most the whole part of log2(n) plus one probes: one probe for one piece, three for six, five for 26, eight for 206, thirteen for 4,096. The spread within a row is mostly the number of probes a reading happens to need, and the cheapest readings are those of a time base the blob lacks. The format caps the section at 4,096 entries, so the last row is the largest table a blob may hold and every row is held to the ceiling. Before the cap, the largest table a 1 MiB blob could hold (32,717 entries, 15 probes) measured exactly 500, at the ceiling and not safely under it; that is why the cap exists.
@@ -145,42 +145,42 @@ How high can the degree of an EPHEM kind 1 segment go before a one-segment state
 <!-- degree-table:start -->
 | Degree | Bytes per record | Instructions | Slices of 1,000 | Within the 2,500 ceiling |
 | --- | --- | --- | --- | --- |
-| 4 | 120 | 965 | 1 | yes |
-| 6 | 168 | 1,106 | 2 | yes |
-| 8 | 216 | 1,247 | 2 | yes |
-| 10 | 264 | 1,388 | 2 | yes |
-| 12 | 312 | 1,529 | 2 | yes |
-| 14 | 360 | 1,670 | 2 | yes |
-| 16 | 408 | 1,811 | 2 | yes |
-| 18 | 456 | 1,952 | 2 | yes |
-| 20 | 504 | 2,093 | 3 | yes |
-| 22 | 552 | 2,234 | 3 | yes |
-| 24 | 600 | 2,375 | 3 | yes |
-| 26 | 648 | 2,516 | 3 | no |
-| 28 | 696 | 2,657 | 3 | no |
-| 30 | 744 | 2,798 | 3 | no |
-| 32 | 792 | 2,939 | 3 | no |
-| 34 | 840 | 3,080 | 4 | no |
-| 36 | 888 | 3,221 | 4 | no |
-| 38 | 936 | 3,362 | 4 | no |
-| 40 | 984 | 3,503 | 4 | no |
+| 4 | 120 | 1,010 | 2 | yes |
+| 6 | 168 | 1,151 | 2 | yes |
+| 8 | 216 | 1,292 | 2 | yes |
+| 10 | 264 | 1,433 | 2 | yes |
+| 12 | 312 | 1,574 | 2 | yes |
+| 14 | 360 | 1,715 | 2 | yes |
+| 16 | 408 | 1,856 | 2 | yes |
+| 18 | 456 | 1,997 | 2 | yes |
+| 20 | 504 | 2,138 | 3 | yes |
+| 22 | 552 | 2,279 | 3 | yes |
+| 24 | 600 | 2,420 | 3 | yes |
+| 26 | 648 | 2,561 | 3 | no |
+| 28 | 696 | 2,702 | 3 | no |
+| 30 | 744 | 2,843 | 3 | no |
+| 32 | 792 | 2,984 | 3 | no |
+| 34 | 840 | 3,125 | 4 | no |
+| 36 | 888 | 3,266 | 4 | no |
+| 38 | 936 | 3,407 | 4 | no |
+| 40 | 984 | 3,548 | 4 | no |
 <!-- degree-table:end -->
 
-The cost is a straight line: 683 instructions plus 70.5 per degree. The CI build, without `wasm-opt`, is 45 higher at every degree. These blobs hold two bodies and one segment; a larger blob adds to the fixed part, because bodies and segments are found by scanning (the same state on the Moon in the `cassini-soi` blob, with seven bodies and six segments, costs 176 more at degree 12). So the highest even degree that stays inside the ceiling is 24 in the smallest blob and 22 with that overhead added. An earlier guess in `docs/orbit-segment.md`, about 5,000 instructions at degree 34, came from two points on two different blobs and was wrong by a wide margin: degree 34 measures 3,080.
+The cost is a straight line: 728 instructions plus 70.5 per degree. These blobs hold two bodies and one segment; a larger blob adds to the fixed part, because bodies and segments are found by scanning (the same state on the Moon in the `cassini-soi` blob, with seven bodies and six segments, costs 184 more at degree 12). So the highest even degree that stays inside the ceiling is 24 in the smallest blob and 22 with that overhead added. An earlier guess in `docs/orbit-segment.md`, about 5,000 instructions at degree 34, came from two points on two different blobs and was wrong by a wide margin: degree 34 measures 3,125.
 
 ## Reading the numbers
 
-A geometric state costs about 1,700 to 2,000 instructions for each segment on the path between the two bodies, plus a few hundred of fixed overhead. Most of that is the Chebyshev recurrence: three components, position and velocity together, at degree 10 to 12. A body tree shaped so that common queries cross one or two segments keeps them within two to four slices.
+A geometric state costs about 1,500 to 1,800 instructions for one segment and 1,100 to 1,900 more for each further segment on the path between the two bodies; about 450 of the first is fixed overhead. Most of that is the Chebyshev recurrence: three components, position and velocity together, at degree 10 to 12. A body tree shaped so that common queries cross one or two segments keeps them within two to four slices.
 
 Light time roughly doubles the cost, because the target's path is evaluated twice. Stellar aberration adds about a hundred instructions on top of that; it needs no trigonometry.
 
 A site view is the sum of its parts: the state, the orientation it contains, and about 400 instructions for the arcsine and arctangent behind elevation and azimuth.
 
-A supplied spacecraft state is cheap by itself (726 instructions relative to its own center) since it replaces a segment evaluation with a straight-line step.
+A supplied spacecraft state is cheap by itself (465 instructions relative to its own center) since it replaces a segment evaluation with a straight-line step.
 
 Start-up is where the cost is. Structural validation alone is two to three thousand instructions; verifying the checksum adds about 21 instructions per blob byte with the default table, so 276 slices for the 13 KB blob and 1,867 for the 90 KB one. A mission that already trusts its uplink can pass the skip flag; otherwise the cost is paid once per blob.
 
-For scale, full CSPICE as a SpaceWasm guest (measured in the cspice-wasm repository) takes 31,660 instructions for a geometric Earth and Sun state and 81,606 with light time and stellar aberration, against about 4,600 and 6,500 here, and it needs 96.5 MiB of memory against one page.
+For scale, full CSPICE as a SpaceWasm guest (measured in the cspice-wasm repository) takes 31,660 instructions for a geometric Earth and Sun state and 81,606 with light time and stellar aberration, against about 4,700 and 6,300 here, and it needs 96.5 MiB of memory against one page.
 
 ## What is not measured
 
