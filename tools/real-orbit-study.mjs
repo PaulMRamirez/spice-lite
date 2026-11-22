@@ -27,7 +27,7 @@ const dir = process.env.SPICE_LITE_REAL_KERNELS ?? resolve(root, 'kernels/real')
 const config = JSON.parse(readFileSync(resolve(root, 'tools/real-kernels.json'), 'utf8'));
 const DAY = 86400;
 // The highest degree of kind 1 tried: a one-segment state at degree 22 costs
-// 2,234 instructions in a blob of two bodies (scripts/measure-cost-degree.mjs)
+// 2,279 instructions in a blob of two bodies (scripts/measure-cost-degree.mjs)
 // and about 180 more in the largest test blob, inside the ceiling of 2,500;
 // degree 24 would not be.
 const MAX_DEGREE = 22;

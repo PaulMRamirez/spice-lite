@@ -6,6 +6,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CC="${CC:-clang}"
+LD="${WASM_LD:-wasm-ld}"
 OUT="$ROOT/build/sun_watch.wasm"
 BLOB="$ROOT/test/blobs/sun-earth-moon.slb"
 mkdir -p "$ROOT/build"
@@ -18,8 +19,15 @@ for (let i = 0; i < b.length; i += 16) out += "  " + [...b.subarray(i, i + 16)].
 out += "};\nconst uint32_t sequence_blob_len = " + b.length + "u;\n";
 fs.writeFileSync(process.argv[2], out);
 ' "$BLOB" "$ROOT/build/sequence_blob.c"
-"$CC" --target=wasm32 -mcpu=mvp -O2 -std=c99 -ffreestanding -nostdlib -fno-builtin \
-  -ffp-contract=off -fvisibility=hidden -Wall -Wextra -Werror -I"$ROOT/include" \
-  -Wl,--no-entry -Wl,--strip-all -Wl,-z,stack-size=4096 -Wl,--initial-memory=65536 \
-  -o "$OUT" "$ROOT/examples/sequence/sun_watch.c" "$ROOT/src/spice_lite.c" "$ROOT/build/sequence_blob.c"
+# Compiled and linked as two steps so that clang never runs wasm-opt on the
+# module (see scripts/build-wasm.sh).
+OBJS=()
+for src in "$ROOT/examples/sequence/sun_watch.c" "$ROOT/src/spice_lite.c" "$ROOT/build/sequence_blob.c"; do
+  obj="$ROOT/build/sequence_$(basename "$src" .c).o"
+  "$CC" --target=wasm32 -mcpu=mvp -O2 -std=c99 -ffreestanding -nostdlib -fno-builtin \
+    -ffp-contract=off -fvisibility=hidden -Wall -Wextra -Werror -I"$ROOT/include" -c -o "$obj" "$src"
+  OBJS+=("$obj")
+done
+"$LD" --no-entry --strip-all -z stack-size=4096 --initial-memory=65536 -o "$OUT" "${OBJS[@]}"
+rm -f "${OBJS[@]}"
 echo "$OUT: $(wc -c < "$OUT") bytes"
