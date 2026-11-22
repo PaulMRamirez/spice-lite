@@ -1,0 +1,39 @@
+name: tag
+
+# Tags the head of main as v<version>, by hand only. It refuses unless the
+# version asked for is the one in package.json, CHANGELOG.md has a section for
+# it, and no such tag exists yet. It makes an annotated tag and nothing else:
+# no release, no package, no artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to tag, without the v (for example 0.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the version and tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a version: $VERSION"; exit 1; }
+          [ "$(node -p "require('./package.json').version")" = "$VERSION" ] || { echo "package.json is not at $VERSION"; exit 1; }
+          grep -q "^## $VERSION " CHANGELOG.md || { echo "CHANGELOG.md has no section for $VERSION"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then echo "v$VERSION already exists"; exit 1; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "spice-lite $VERSION"
+          git push origin "v$VERSION"
+          echo "tagged $(git rev-parse HEAD) as v$VERSION"
