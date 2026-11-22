@@ -184,4 +184,4 @@ For scale, full CSPICE as a SpaceWasm guest (measured in the cspice-wasm reposit
 
 ## What is not measured
 
-Wall time on flight hardware, behavior inside an actual F Prime deployment, and the cost of the calls on blobs with other shapes (deeper trees, Hermite segments, Chebyshev orientation segments of high degree).
+Wall time on flight hardware, behavior inside a full F Prime deployment (the sequencer component alone has run the demonstration sequence; `docs/fprime-integration.md`), and the cost of the calls on blobs with other shapes (deeper trees, Hermite segments, Chebyshev orientation segments of high degree).
