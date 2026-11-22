@@ -2,7 +2,7 @@
 
 What spice-lite has been run against beyond its own synthetic test data: three orbiters and their spacecraft clocks, from NAIF's public archives. This file lists the kernels, says how to fetch them, and holds the clock results; the orbit results are in `docs/orbit-segment.md`, under "Real orbiters".
 
-None of these kernels is committed to this repository, and none is used by the test suite or by CI, which run on the small fixtures of cspice-wasm and on synthetic kernels. The figures here are reproducible by hand, not checked on every push.
+None of these kernels is committed to this repository, and none is used by the test suite or the per-push checks, which run on the small fixtures of cspice-wasm and on synthetic kernels. A separate workflow, `real-kernels`, fetches them (checked against their hashes, and cached), reruns both tools, and fails unless every table here and in `docs/orbit-segment.md` comes out as committed; it runs weekly, on demand, and on pull requests that change the tools involved. Figures quoted in the surrounding prose are not checked, only the tables.
 
 ## The kernels
 
@@ -24,7 +24,7 @@ node tools/real-kernels.mjs --fetch          # curl each file into kernels/real 
 node tools/real-kernels.mjs --update-doc     # measure, and rewrite the tables here and in docs/orbit-segment.md
 ```
 
-`SPICE_LITE_REAL_KERNELS` names another directory. The measurement takes about a quarter of an hour; `--clocks` and `--burn` rerun only the clock table or only the maneuver table, in seconds. `node tools/real-orbit-study.mjs --update-doc` runs two follow-up studies on the same kernels (a Chebyshev segment held to the cost ceiling, and a prototype of rotation terms for the orbit segment) and takes about as long; their tables are in `docs/orbit-segment.md` too.
+`SPICE_LITE_REAL_KERNELS` names another directory. The measurement takes a few minutes (under three on the CI runner); `--clocks` and `--burn` rerun only the clock table or only the maneuver table, in seconds. `node tools/real-orbit-study.mjs --update-doc` runs two follow-up studies on the same kernels (a Chebyshev segment held to the cost ceiling, and a prototype of rotation terms for the orbit segment) and takes about a minute; their tables are in `docs/orbit-segment.md` too.
 
 ## The clock mapping on real clocks
 

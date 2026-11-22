@@ -1,0 +1,57 @@
+name: real-kernels
+
+# Reruns the measurements made on real mission kernels (LRO, MRO, MAVEN) and
+# fails unless every table they write into the documents comes out as it is
+# committed. The kernels are public NAIF products, about 185 MB, fetched from
+# naif.jpl.nasa.gov and checked against the hashes in tools/real-kernels.json;
+# none is committed. The measurements take two or three minutes on a runner,
+# but they depend on a download from an outside server, so they are kept out of
+# the per-push checks: this runs weekly, on demand, and on pull requests that
+# change the tools or tables it covers.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1'
+  pull_request:
+    paths:
+      - tools/real-kernels.mjs
+      - tools/real-kernels.json
+      - tools/real-orbit-study.mjs
+      - tools/orbit-model.mjs
+      - tools/orbit-tradeoff.mjs
+      - tools/sclk-time.mjs
+      - tools/slicer.mjs
+      - .github/workflows/real-kernels.yml
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      SPICE_LITE_REAL_KERNELS: ${{ github.workspace }}/kernels/real
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The kernels never change (each is pinned by hash), so one download serves
+      # every run until the list itself changes.
+      - uses: actions/cache@v4
+        with:
+          path: kernels/real
+          key: real-kernels-${{ hashFiles('tools/real-kernels.json') }}
+      - name: Fetch the kernels and check their hashes
+        run: node tools/real-kernels.mjs --fetch
+      - name: The orbit segment and the clock mapping on real kernels
+        run: node tools/real-kernels.mjs --update-doc
+      - name: The Chebyshev comparison and the rotation-term prototype
+        run: node tools/real-orbit-study.mjs --update-doc
+      - name: The committed tables are what the measurements produce
+        run: git diff --exit-code -- docs

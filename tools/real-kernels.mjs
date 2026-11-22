@@ -6,7 +6,7 @@
 //
 //   node tools/real-kernels.mjs --fetch         download the kernels (curl) and check their hashes
 //   node tools/real-kernels.mjs [--update-doc]  measure
-//   node tools/real-kernels.mjs --clocks [--update-doc]  measure the clocks only (seconds, not minutes)
+//   node tools/real-kernels.mjs --clocks [--update-doc]  measure the clocks only
 //   node tools/real-kernels.mjs --burn [--update-doc]    measure only the day that holds a maneuver, with and without breaks
 //
 // The kernels are public NAIF products and are never committed here. They live

@@ -33,12 +33,23 @@ FPRIME_IMPORT("exit") extern void fprime_wasm_exit(int32_t code);
 #define FW_TIME_SIZE 11u
 
 /* Mission constants for the demonstration. */
+/* Each of these may be set on the compiler's command line, so that the same
+ * sequence can be built for another site, pace, or command (the run inside an
+ * F Prime deployment does; see docs/fprime-integration.md). */
+#ifndef SITE_ID
 #define SITE_ID 2                       /* the Earth site in the sun-earth-moon blob */
+#endif
 #define SUN 10
 #define MIN_ELEVATION_RAD 0.17453292519943295 /* 10 degrees */
+#ifndef CHECK_PERIOD_US
 #define CHECK_PERIOD_US 600000000ull    /* look again every 10 minutes */
+#endif
+#ifndef MAX_CHECKS
 #define MAX_CHECKS 200                  /* give up after about 33 hours */
+#endif
+#ifndef OPCODE_TAKE_IMAGE
 #define OPCODE_TAKE_IMAGE 0x00001001u   /* placeholder */
+#endif
 
 /* The blob, generated into build/sequence_blob.c by scripts/build-sequence.sh. */
 extern const uint8_t sequence_blob[];
