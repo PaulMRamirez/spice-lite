@@ -1808,6 +1808,7 @@ int lite_sub_point(int32_t body, int32_t observer, double et, double *lon, doubl
 
 #define OCC_MEMO 8
 #define OCC_GOLDEN_MAX 30
+#define OCC_FRONT_MAX 16
 
 /* Two hints for clang, which builds the flight module. LITE_SMALL compiles for
  * size two parts that do little arithmetic (measured: it must stay off
@@ -2082,6 +2083,85 @@ LITE_SMALL static int occ_spheres(const double *b, double rb, const double *f, d
     return LITE_OK;
 }
 
+/* Which of two ellipsoids is in front, exactly, where a plane can be found
+ * with one on each side of it. Two convex bodies that do not intersect have
+ * such a plane, and every line of sight that meets both bodies meets first
+ * the one on the observer's side of it, so the plane settles the question
+ * for every such line at once.
+ *
+ * n is the plane's normal, pointing from the front body toward the target.
+ * The point of an ellipsoid farthest along a direction has a closed form (in
+ * the body's frame it is the direction scaled by the squared semi-axes and
+ * brought to the surface), so pf, the front body's farthest point along n,
+ * and pt, the target's farthest point against n, cost a few dozen operations
+ * each; a plane with normal n separates the bodies exactly when n.(pt - pf)
+ * is positive. The search starts from the line of centers, which is the
+ * answer for two spheres. While that fails, n and pt - pf are both
+ * differences of a point of the target and a point of the front body, as is
+ * every point between them, and n moves to the shortest of those (the step of
+ * Gilbert's method for the distance between convex sets), which brings it
+ * toward the line between the bodies' nearest points.
+ *
+ * With the observer at the origin and a separating n in hand: if the target
+ * reaches to or behind the observer's level along n (n.pt <= 0) the observer
+ * is on the target's side; if the front body lies wholly behind that level
+ * (n.pf < 0) the observer is between the two and no line of sight meets both;
+ * otherwise the front body is in front.
+ *
+ * Returns 1 when `by` is in front, 0 when it is not (no occultation), and -1
+ * when no plane was found in OCC_FRONT_MAX tries: the bodies intersect, or
+ * all but touch. tools/front-rule-study.mjs has the same steps and the
+ * measurements: one try for spheres and for bodies as flattened as planets,
+ * and a plane found within the limit down to a gap of a tenth of the smaller
+ * body's radius between ellipsoids with axis ratios of five. */
+static int occ_front(const double *b, const double *rt, const double *rott, const double *f,
+                     const double *rf, const double *rotf)
+{
+    double n[3], it[3], iv[3], v[3], pf[3], pt[3], d[3], h, lam, ee;
+    int i, tries;
+    for (i = 0; i < 3; i++) {
+        it[i] = 1.0 / rt[i];
+        iv[i] = 1.0 / rf[i];
+        n[i] = b[i] - f[i];
+    }
+    for (tries = 0; tries < OCC_FRONT_MAX; tries++) {
+        to_unit(iv, rotf, n, v); /* n in the front body's frame, times its semi-axes */
+        h = norm3(v);
+        from_unit(rf, rotf, v, pf);
+        to_unit(it, rott, n, v);
+        lam = norm3(v);
+        from_unit(rt, rott, v, pt);
+        if (!(h > 0.0) || !(lam > 0.0)) {
+            return -1;
+        }
+        for (i = 0; i < 3; i++) {
+            pf[i] = f[i] + pf[i] / h;
+            pt[i] = b[i] - pt[i] / lam;
+            d[i] = pt[i] - pf[i];
+        }
+        h = dot3(n, d);
+        if (!finite64(h)) {
+            return -1;
+        }
+        if (h > 0.0) {
+            return dot3(n, pt) > 0.0 && dot3(n, pf) >= 0.0;
+        }
+        /* the shortest point between n and d */
+        ee = 0.0;
+        lam = 0.0;
+        for (i = 0; i < 3; i++) {
+            v[i] = n[i] - d[i];
+            ee += v[i] * v[i];
+            lam += n[i] * v[i];
+        }
+        lam = lam < ee ? lam / ee : 1.0;
+        for (i = 0; i < 3; i++) {
+            n[i] -= lam * v[i];
+        }
+    }
+    return -1;
+}
+
 /* Occultation of two ellipsoids: the target with semi-axes rt and rotation
  * rott at b, the front body with rf and rotf at f, both relative to the
  * observer in J2000. A null rotation means a sphere (equal semi-axes).
@@ -2115,13 +2195,17 @@ static int occ_ellipsoids(const double *b, const double *rt, const double *rott,
     }
     tf2 = n2 - 1.0; /* squared tangent length to the front body, in its unit-sphere space */
     *code = LITE_OCC_NONE;
-    /* Which body is nearer: the one with the shorter tangent from the
-     * observer, as for two spheres. Both lengths are taken in the front
-     * body's unit-sphere space, the target's along the line to its center
-     * (tt is that line's squared length there, and 1 - 1/m2 the share of it
-     * that reaches the target's limb). For two spheres this is the test in
-     * occ_spheres exactly. */
-    if (!(tf2 < tt * (1.0 - 1.0 / m2))) {
+    /* Which body is nearer. occ_front says, exactly, wherever it finds a
+     * plane between the two. Where it does not (bodies that intersect or all
+     * but touch), the rule of earlier drafts stands in: the nearer body is the
+     * one with the shorter tangent from the observer, as for two spheres, both
+     * lengths taken in the front body's unit-sphere space and the target's
+     * along the line to its center (tt is that line's squared length there,
+     * and 1 - 1/m2 the share of it that reaches the target's limb). For two
+     * spheres that is the test in occ_spheres exactly; for bodies that are far
+     * from round it can name the wrong one. */
+    i = occ_front(b, rt, rott, f, rf, rotf);
+    if (i == 0 || (i < 0 && !(tf2 < tt * (1.0 - 1.0 / m2)))) {
         return LITE_OK;
     }
     /* e: the vector toward the front body's center, scaled to the tangent
@@ -2222,10 +2306,42 @@ static int occ_ellipsoids(const double *b, const double *rt, const double *rott,
     return LITE_OK;
 }
 
-LITE_SMALL int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer, double et,
-                                    int32_t *code, int32_t *target_shape, int32_t *by_shape)
+/* The position of body idx as the observer at o (relative to the root, at et)
+ * sees it under a one-iteration light-time correction, as lite_state's
+ * LITE_LT has it: the body at et less the geometric light time. epoch
+ * receives et less the light time of that retarded position, which is when
+ * the light now arriving left the body and so the time for its orientation.
+ * The memo is cleared, because its links were evaluated at another time. */
+static int occ_retarded(link_memo *m, int idx, const double *o, double et, double *p, double *epoch)
+{
+    double g[3];
+    int st, k;
+    st = pos_rel(m, idx, G.root, et, g);
+    if (st != LITE_OK) {
+        return st;
+    }
+    for (k = 0; k < 3; k++) {
+        g[k] -= o[k];
+    }
+    m->n = 0;
+    st = pos_rel(m, idx, G.root, et - norm3(g) / CLIGHT, p);
+    m->n = 0;
+    if (st != LITE_OK) {
+        return st;
+    }
+    for (k = 0; k < 3; k++) {
+        p[k] -= o[k];
+    }
+    *epoch = et - norm3(p) / CLIGHT;
+    return LITE_OK;
+}
+
+LITE_SMALL int lite_occulted_corr(int32_t target, int32_t by, int32_t observer, double et,
+                                  int32_t corr, int32_t *code, int32_t *target_shape,
+                                  int32_t *by_shape)
 {
     double rt[3], rf[3], b[3], f[3], rott[9], rotf[9];
+    double ett = et, etf = et; /* when each body is seen: et, or et less its light time */
     const double *pt = 0, *pf = 0;
     link_memo memo;
     int ti, fi, oi, st;
@@ -2235,8 +2351,13 @@ LITE_SMALL int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer
     if (!G.ready) {
         return LITE_BAD_BLOB;
     }
-    if (code == 0 || !finite64(et)) {
+    if (code == 0 || !finite64(et) || corr < LITE_NONE || corr > LITE_LT_S) {
         return LITE_BAD_ARG;
+    }
+    /* Light time needs inertial positions, as in lite_state. Stellar
+     * aberration is not offered: SPICE's occult_c has none either. */
+    if (corr == LITE_LT_S || (corr == LITE_LT && ((G.flags & 1u) == 0u || body_naif(G.root) != 0))) {
+        return LITE_UNSUPPORTED;
     }
     ti = body_index(target);
     fi = body_index(by);
@@ -2251,13 +2372,34 @@ LITE_SMALL int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer
         return LITE_UNSUPPORTED;
     }
     memo.n = 0;
-    st = pos_rel(&memo, ti, oi, et, b);
-    if (st != LITE_OK) {
-        return st;
-    }
-    st = pos_rel(&memo, fi, oi, et, f);
-    if (st != LITE_OK) {
-        return st;
+    if (corr == LITE_NONE) {
+        st = pos_rel(&memo, ti, oi, et, b);
+        if (st != LITE_OK) {
+            return st;
+        }
+        st = pos_rel(&memo, fi, oi, et, f);
+        if (st != LITE_OK) {
+            return st;
+        }
+    } else {
+        /* Each body where the observer sees it: its own light time back. The
+         * geometric position of the second body reuses the links the first
+         * one's left in the memo only through the observer, whose position is
+         * taken once. */
+        double o[3];
+        st = pos_rel(&memo, oi, G.root, et, o);
+        if (st != LITE_OK) {
+            return st;
+        }
+        memo.n = 0;
+        st = occ_retarded(&memo, ti, o, et, b, &ett);
+        if (st != LITE_OK) {
+            return st;
+        }
+        st = occ_retarded(&memo, fi, o, et, f, &etf);
+        if (st != LITE_OK) {
+            return st;
+        }
     }
     if (!(rt[0] == rt[1] && rt[1] == rt[2] && rf[0] == rf[1] && rf[1] == rf[2])) {
         /* At least one body is not round. First the cheap way out: when the
@@ -2276,14 +2418,14 @@ LITE_SMALL int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer
         int far = qb > 0.0 && qf > 0.0 && dot3(f, b) <= lite_sqrt(qb) * lite_sqrt(qf) - rtx * rfx;
         if (!(rt[0] == rt[1] && rt[1] == rt[2])) {
             ts = far ? LITE_SHAPE_BOUND : LITE_SHAPE_STANDIN;
-            if (!far && lite_orient(target, et, rott) == LITE_OK) {
+            if (!far && lite_orient(target, ett, rott) == LITE_OK) {
                 pt = rott;
                 ts = LITE_SHAPE_ELLIPSOID;
             }
         }
         if (!(rf[0] == rf[1] && rf[1] == rf[2])) {
             fs = far ? LITE_SHAPE_BOUND : LITE_SHAPE_STANDIN;
-            if (!far && lite_orient(by, et, rotf) == LITE_OK) {
+            if (!far && lite_orient(by, etf, rotf) == LITE_OK) {
                 pf = rotf;
                 fs = LITE_SHAPE_ELLIPSOID;
             }
@@ -2319,7 +2461,13 @@ done:
     return st;
 }
 
+int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer, double et, int32_t *code,
+                         int32_t *target_shape, int32_t *by_shape)
+{
+    return lite_occulted_corr(target, by, observer, et, LITE_NONE, code, target_shape, by_shape);
+}
+
 int lite_occulted(int32_t target, int32_t by, int32_t observer, double et, int32_t *code)
 {
-    return lite_occulted_shapes(target, by, observer, et, code, 0, 0);
+    return lite_occulted_corr(target, by, observer, et, LITE_NONE, code, 0, 0);
 }

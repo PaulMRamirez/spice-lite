@@ -12,7 +12,7 @@ The counts are deterministic for a given compiler build. CI reruns the measureme
 
 ## Every call, on the large test blob
 
-The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 26,601 bytes; compiled IR 41,686 bytes.
+The `cassini-soi` blob is 89,840 bytes, too large for the one page the shipped module declares, so this table uses a variant of the module linked with four pages. Memory size does not change what the code executes. Module 28,432 bytes; compiled IR 44,712 bytes.
 
 <!-- full-table:start -->
 | Call | Instructions | Slices of 1,000 |
@@ -61,9 +61,9 @@ Verifying the CRC-32 is the costly part of `lite_init`, and its cost trades agai
 <!-- crc-table:start -->
 | LITE_CRC_TABLES | Table size | Module size | Instructions per blob byte | lite_init on the 13 KB blob | Slices |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 64 bytes | 25,955 bytes | 34.0 | 449,244 | 450 |
-| 1 (default) | 1,024 bytes | 27,035 bytes | 20.8 | 275,077 | 276 |
-| 4 | 4,096 bytes | 30,057 bytes | 13.8 | 183,069 | 184 |
+| 0 | 64 bytes | 27,352 bytes | 34.0 | 449,244 | 450 |
+| 1 (default) | 1,024 bytes | 28,432 bytes | 20.8 | 275,077 | 276 |
+| 4 | 4,096 bytes | 31,454 bytes | 13.8 | 183,069 | 184 |
 <!-- crc-table:end -->
 
 The default is the middle row. A larger table buys less than it would on real hardware, because under an interpreter the cost is dominated by the number of operations, not by memory traffic.
@@ -81,9 +81,26 @@ A blob may carry Fletcher-32 in place of the CRC-32, and says so in its header (
 
 It also detects less, which is why the CRC stays the default; `SPEC.md`, "Integrity", says what. The code for it adds 270 bytes to the module. Its sums are kept in 32 bits and reduced every 356 words; kept in 64 bits and reduced once at the end, which is simpler, the same loop measured 8.8 instructions per byte. An earlier experiment with plain running sums over 32-bit words measured 5.8 instructions per byte; that sum was not a standard one and is not what the library carries.
 
+## Which body is in front
+
+`lite_occulted` has to say which of the two bodies is the nearer before it compares their outlines. Earlier drafts compared the lengths of the tangents from the observer, which is exact for two spheres. `tools/front-rule-study.mjs` measured that rule against lines of sight (every line that meets two bodies which do not intersect meets the same one first) for random pairs of ellipsoids set a given gap apart and seen from random places; the count is of views in which the rule named the wrong body, out of those in which some line of sight meets both:
+
+<!-- front-rule-table:start -->
+| Gap between the surfaces, as a fraction of the smaller body's mean radius | Spheres | Axis ratios to 1.2 | To 2 | To 5 |
+| --- | --- | --- | --- | --- |
+| 3 | 0 of 2000 | 0 of 2000 | 0 of 2000 | 13 of 2000 |
+| 1 | 0 of 2000 | 0 of 2000 | 0 of 2000 | 85 of 2000 |
+| 0.3 | 0 of 2000 | 0 of 2000 | 7 of 2000 | 151 of 2000 |
+| 0.1 | 0 of 2000 | 0 of 2000 | 25 of 2000 | 125 of 2000 |
+| 0.03 | 0 of 2000 | 0 of 2000 | 26 of 2000 | 191 of 2000 |
+| 0.01 | 0 of 2000 | 0 of 2000 | 46 of 2000 | 227 of 2000 |
+<!-- front-rule-table:end -->
+
+So the rule was right for spheres and for bodies as flattened as any planet, at every gap tried, and wrong in up to one view in nine for bodies with axis ratios of five, even three radii apart. The library now looks for a plane with one body on each side and takes the body on the observer's side of it (`occ_front` in `src/spice_lite.c`), which is exact whenever a plane is found. In the same views it was never wrong; it found its plane on the first try for spheres and planet-like bodies and within its limit of 16 tries in every view down to a gap of a tenth of the smaller body's radius, and below that it sometimes ran out (118 of 2,000 views at a gap of 0.03 radii and axis ratios to five, 579 at 0.01), where the old rule still stands in. The first try costs about 500 instructions and each further one about as much again, so a pair of elongated bodies that all but touch can add up to some 8,000 to the figures below; none of the measured rows needs a second try.
+
 ## Sub-points and occultation
 
-`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module, and held to ceilings of 8,000 and 18,000 instructions: the script fails if a row exceeds its ceiling. The ceilings are the largest measured rows (6,734 and 15,311) with about a sixth of headroom, enough for small changes, not for a blob with deeper trees or higher degrees than these. The sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in; modeling bodies as ellipsoids in `lite_occulted` added 4,601 bytes to the module and 8,180 bytes to its compiled IR on its own branch (the combined library was 24,083 and 39,776 when the two were merged, in a build that `wasm-opt` had been through), and the heap `spacewasm validate` reports for the load went from 32,550 bytes in 4 pages to 41,086 in 6 of 16.
+`lite_sub_point` and `lite_occulted`, measured on the two geometry blobs (`eclipses` and `saturn-soi`) with the four-page variant of the module, and held to ceilings of 8,000 and 18,000 instructions, with 25,000 for `lite_occulted_corr` under light time: the script fails if a row exceeds its ceiling. The ceilings are the largest measured rows (6,734, 15,936, and 22,037) with about a sixth of headroom, enough for small changes, not for a blob with deeper trees or higher degrees than these. The sizes quoted in this document and in `SPEC.md` are for the combined library, with these calls and the kind 4 orbit segment in; modeling bodies as ellipsoids in `lite_occulted` added 4,601 bytes to the module and 8,180 bytes to its compiled IR on its own branch (the combined library was 24,083 and 39,776 when the two were merged, in a build that `wasm-opt` had been through), and the heap `spacewasm validate` reports for the load went from 32,550 bytes in 4 pages to 41,086 in 6 of 16.
 
 <!-- geometry-table:start -->
 | Call | Instructions | Slices of 1,000 |
@@ -92,22 +109,28 @@ It also detects less, which is why the CRC stays the default; `SPEC.md`, "Integr
 | lite_sub_point, Earth (a spheroid) from the Moon | 5,504 | 6 |
 | lite_sub_point, triaxial stand-in from Earth, three segments | 6,734 | 7 |
 | lite_sub_point, Earth from a supplied spacecraft state 900 km up | 2,643 | 3 |
-| lite_occulted, triaxial stand-in by Earth from a supplied state (two ellipsoids, none) | 6,092 | 7 |
+| lite_occulted, triaxial stand-in by Earth from a supplied state (two ellipsoids, none) | 6,112 | 7 |
 | lite_sub_point, triaxial stand-in from a supplied spacecraft state 10 km up | 2,564 | 3 |
-| lite_occulted, Sun by the Moon from a supplied spacecraft state (two spheres, none) | 7,610 | 8 |
-| lite_occulted, Earth by the triaxial stand-in from a supplied state (two ellipsoids) | 6,075 | 7 |
-| lite_occulted, Earth by the Moon from the Sun (partial) | 9,909 | 10 |
-| lite_occulted, Sun by Earth from the Moon (full) | 9,950 | 10 |
-| lite_occulted, Earth by the Sun from the Moon (the Sun is behind) | 8,800 | 9 |
-| lite_occulted, Sun by Earth from the Moon, far apart in the sky (none) | 7,407 | 8 |
-| lite_occulted, Sun by Earth from 2 m above its surface, Sun below the horizon (full) | 8,648 | 9 |
-| lite_occulted, Sun by Earth from 2 m above its surface, lower limb on the horizon (partial, by search) | 10,631 | 11 |
-| lite_occulted, Sun by Earth from 2 m above its surface, Sun just clear of the horizon (none, by the full search) | 15,056 | 16 |
+| lite_occulted, Sun by the Moon from a supplied spacecraft state (two spheres, none) | 7,633 | 8 |
+| lite_occulted, Earth by the triaxial stand-in from a supplied state (two ellipsoids) | 6,095 | 7 |
+| lite_occulted, Earth by the Moon from the Sun (partial) | 10,423 | 11 |
+| lite_occulted, Sun by Earth from the Moon (full) | 10,467 | 11 |
+| lite_occulted, Earth by the Sun from the Moon (the Sun is behind) | 9,301 | 10 |
+| lite_occulted, Sun by Earth from the Moon, far apart in the sky (none) | 7,427 | 8 |
+| lite_occulted_corr with light time, Sun by Earth from the Moon (full) | 16,946 | 17 |
+| lite_occulted_corr with light time, Earth by the Moon from the Sun (partial) | 18,416 | 19 |
+| lite_occulted_corr with light time, Sun by Earth from the Moon, far apart in the sky (none) | 13,906 | 14 |
+| lite_occulted, Sun by Earth from 2 m above its surface, Sun below the horizon (full) | 9,165 | 10 |
+| lite_occulted, Sun by Earth from 2 m above its surface, lower limb on the horizon (partial, by search) | 11,153 | 12 |
+| lite_occulted, Sun by Earth from 2 m above its surface, Sun just clear of the horizon (none, by the full search) | 15,575 | 16 |
 | lite_sub_point, Saturn (a spheroid) from Cassini (predicted) | 4,878 | 5 |
-| lite_occulted, Sun by Saturn from Cassini (full) | 8,833 | 9 |
-| lite_occulted, Earth by Saturn from Cassini (two ellipsoids, full) | 11,610 | 12 |
-| lite_occulted, Sun by Saturn from Cassini, six hours earlier (none) | 6,372 | 7 |
-| lite_occulted, a Moon with unequal radii by Earth from 2 m above its surface, just clear of the horizon (two ellipsoids, none, by the full search) | 15,311 | 16 |
+| lite_occulted, Sun by Saturn from Cassini (full) | 9,350 | 10 |
+| lite_occulted, Earth by Saturn from Cassini (two ellipsoids, full) | 12,233 | 13 |
+| lite_occulted, Sun by Saturn from Cassini, six hours earlier (none) | 6,392 | 7 |
+| lite_occulted_corr with light time, Sun by Saturn from Cassini (full) | 14,689 | 15 |
+| lite_occulted_corr with light time, Earth by Saturn from Cassini (two ellipsoids, full) | 18,859 | 19 |
+| lite_occulted, a Moon with unequal radii by Earth from 2 m above its surface, just clear of the horizon (two ellipsoids, none, by the full search) | 15,936 | 16 |
+| lite_occulted_corr with light time, the same place a moment on (two ellipsoids, by the search) | 22,037 | 23 |
 <!-- geometry-table:end -->
 
 A sub-point is a geometric state, an orientation, and the nearest-point solution: from a supplied state, where the state costs almost nothing, the whole call is about 2,900 instructions, of which the orientation is 1,170 and the Newton iteration with its two arctangents the rest. The shape matters little: the triaxial case costs no more than the spheroid.
@@ -116,7 +139,9 @@ An occultation is the positions of the target and the front body from the observ
 
 The search is the costly branch and a rare one: it runs only when the two bodies' cones cross and the observer is so close to the front body that the crossing might be with the target's mirror image behind it (some 70 m above the Earth for the Sun). It costs about 205 instructions for each of at most 31 evaluations and stops at the first one that shows a shared direction, so a partial occultation found this way costs 10,436 and a clear Sun 14,828; the largest row, 15,110, adds a second orientation.
 
-Against earlier drafts, which modeled both bodies as spheres at 7,040 to 9,372 instructions: a query between round bodies or between bodies far apart is cheaper by a segment or two, and a query that needs an ellipsoid is dearer by 200 to 1,500, the price of an answer that agrees with CSPICE at the limb of a flattened body.
+Light time (`lite_occulted_corr` with `LITE_LT`) adds 6,500 to 7,000 instructions to any of these: the observer's position once more, and each body's path a second time at its own earlier epoch. The exact test of which body is in front adds about 500 to a query that reaches the ellipsoid comparison, and nothing to one settled by the bounding spheres or between two round bodies.
+
+Against earlier drafts, which modeled both bodies as spheres at 7,040 to 9,372 instructions: a query between round bodies or between bodies far apart is cheaper by a segment or two, and a query that needs an ellipsoid is dearer by 200 to 1,500 (and by the 500 of the exact front test since), the price of an answer that agrees with CSPICE at the limb of a flattened body.
 
 ## Time conversion against the piece count
 
@@ -133,7 +158,7 @@ Against earlier drafts, which modeled both bodies as spheres at 7,040 to 9,372 i
 | 4,096 | synthetic table of 4,096 pieces (the most the format allows) | 517 | 412 | 454 | yes |
 <!-- time-table:end -->
 
-A conversion costs about 85 instructions plus 27 for each probe, and a table of n pieces takes at most the whole part of log2(n) plus one probes: one probe for one piece, three for six, five for 26, eight for 206, thirteen for 4,096. The spread within a row is mostly the number of probes a reading happens to need, and the cheapest readings are those of a time base the blob lacks. The format caps the section at 4,096 entries, so the last row is the largest table a blob may hold and every row is held to the ceiling. Before the cap, the largest table a 1 MiB blob could hold (32,717 entries, 15 probes) measured exactly 500, at the ceiling and not safely under it; that is why the cap exists.
+A conversion costs about 90 instructions plus 28 for each probe, and a table of n pieces takes at most the whole part of log2(n) plus one probes: one probe for one piece, three for six, five for 26, eight for 206, thirteen for 4,096. The spread within a row is mostly the number of probes a reading happens to need, and the cheapest readings are those of a time base the blob lacks. The format caps the section at 4,096 entries, so the last row is the largest table a blob may hold and every row is held to the ceiling. Before the cap, the largest table a 1 MiB blob could hold (32,717 entries, 15 probes) measured exactly 500, at the ceiling and not safely under it; that is why the cap exists.
 
 Before the entries were required sorted, `lite_host2et` read every entry: 60 instructions plus 33 per piece. The same readings on the same blobs, measured with the library as it was then:
 
@@ -189,7 +214,7 @@ A site view is the sum of its parts: the state, the orientation it contains, and
 
 A supplied spacecraft state is cheap by itself (465 instructions relative to its own center) since it replaces a segment evaluation with a straight-line step.
 
-Start-up is where the cost is. Structural validation alone is two to three thousand instructions; verifying the checksum adds about 21 instructions per blob byte with the default table, so 276 slices for the 13 KB blob and 1,867 for the 90 KB one. A mission that already trusts its uplink can pass the skip flag; otherwise the cost is paid once per blob.
+Start-up is where the cost is. Structural validation alone is two to three thousand instructions; verifying the checksum adds about 21 instructions per blob byte with the default table, so 276 slices for the 13 KB blob and 1,867 for the 90 KB one, or about 7 per byte, 92 and 613 slices, for a blob that carries the Fletcher sum. A mission that already trusts its uplink can pass the skip flag; otherwise the cost is paid once per blob.
 
 For scale, full CSPICE as a SpaceWasm guest (measured in the cspice-wasm repository) takes 31,660 instructions for a geometric Earth and Sun state and 81,606 with light time and stellar aberration, against about 4,700 and 6,300 here, and it needs 96.5 MiB of memory against one page.
 

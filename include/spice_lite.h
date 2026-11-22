@@ -142,7 +142,8 @@ LITE_API int lite_sub_point(int32_t body, int32_t observer, double et,
  * ELLIPSOID shapes; with the sphere stand-in for an unoriented body it can
  * differ while the limbs are within the spread of that body's radii. code
  * receives a LITE_OCC_ value; it is LITE_OCC_NONE whenever `by` is the farther
- * of the two. Returns LITE_UNSUPPORTED when either body lacks positive radii,
+ * of the two, which is decided by a plane between the bodies and so exactly,
+ * except for elongated bodies that all but touch (SPEC.md). Returns LITE_UNSUPPORTED when either body lacks positive radii,
  * and LITE_BAD_ARG when target and by are the same body or the observer is on
  * or inside either body as modeled. */
 LITE_API int lite_occulted(int32_t target, int32_t by, int32_t observer, double et,
@@ -165,6 +166,22 @@ LITE_API int lite_occulted(int32_t target, int32_t by, int32_t observer, double 
  * can test for it. Nothing is written to the shapes on any other status. */
 LITE_API int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer, double et,
                                   int32_t *code, int32_t *target_shape, int32_t *by_shape);
+
+/* lite_occulted_shapes with an aberration correction. LITE_NONE is that call.
+ * LITE_LT places each of the two bodies where the observer sees it at et: at
+ * et less its own one-way light time (one iteration, as in lite_state), with
+ * its orientation taken at that earlier time too, which is SPICE's occult_c
+ * with "LT". It needs a blob rooted at the solar system barycenter (header
+ * flag bit 0) and segments that reach back by the light time: otherwise
+ * LITE_UNSUPPORTED and LITE_OUT_OF_COVERAGE. LITE_LT_S returns
+ * LITE_UNSUPPORTED: occult_c applies no stellar aberration and neither does
+ * this. Light time moves the start and end of an event by the time the
+ * farther body takes to cross the nearer one's light-time displacement: about
+ * 40 seconds for the Earth hiding the Sun from the Moon, a second or two for
+ * Saturn hiding the Sun or the Earth from an orbiter there. */
+LITE_API int lite_occulted_corr(int32_t target, int32_t by, int32_t observer, double et,
+                                int32_t corr, int32_t *code, int32_t *target_shape,
+                                int32_t *by_shape);
 
 #ifdef __cplusplus
 }

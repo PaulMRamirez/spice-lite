@@ -154,6 +154,11 @@ static int run(const char *path)
             st = lite_occulted(atoi(tok[1]), atoi(tok[2]), atoi(tok[3]), from_hex(tok[4]), &code);
             printf("%d", st);
             if (st == LITE_OK) printf(" i%d", code);
+        } else if (!strcmp(tok[0], "occcorr") && n == 6) {
+            int32_t code = 0, ts = -1, fs = -1;
+            st = lite_occulted_corr(atoi(tok[1]), atoi(tok[2]), atoi(tok[3]), from_hex(tok[4]), atoi(tok[5]), &code, &ts, &fs);
+            printf("%d", st);
+            if (st == LITE_OK) printf(" i%d i%d i%d", code, ts, fs);
         } else if (!strcmp(tok[0], "occshapes") && n == 5) {
             int32_t code = 0, ts = -1, fs = -1;
             st = lite_occulted_shapes(atoi(tok[1]), atoi(tok[2]), atoi(tok[3]), from_hex(tok[4]), &code, &ts, &fs);
@@ -196,6 +201,7 @@ static void battery(double t0, double t1)
             for (j = 0; j < 10; j += 5) {
                 (void)lite_sub_point(ids[i], ids[(i + j + k) % 10], t, &az, &el, &rg);
                 (void)lite_occulted(ids[i], ids[(i + j + 1) % 10], ids[(j + k) % 10], t, &src);
+                (void)lite_occulted_corr(ids[i], ids[(i + j + 1) % 10], ids[(j + k) % 10], t, 1 + (i + j) % 3, &src, 0, 0);
             }
         }
         /* the synthetic orbiters of the kind 4 test blob, at times spread
@@ -218,6 +224,7 @@ static void battery(double t0, double t1)
         for (i = 3; i < 6; i++) {
             (void)lite_sub_point(ids[i], -82, t + 5.0, &az, &el, &rg);
             (void)lite_occulted(ids[i], ids[i + 1], -82, t + 5.0, &src);
+            (void)lite_occulted_corr(ids[i], ids[i + 1], -82, t + 5.0, LITE_LT, &src, 0, 0);
         }
         /* the geometry blob: its spacecraft (-900) placed just outside each body
          * that has radii there, where the nearest-point iteration does its work */

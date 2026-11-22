@@ -472,6 +472,10 @@ fn main() -> Res<()> {
                 "lite_occulted",
                 &[i(t[1])?, i(t[2])?, i(t[3])?, Value::F64(hex_f64(t[4])?), p(out)],
             )?,
+            "occcorr" => host.call(
+                "lite_occulted_corr",
+                &[i(t[1])?, i(t[2])?, i(t[3])?, Value::F64(hex_f64(t[4])?), i(t[5])?, p(out), p(out + 4), p(out + 8)],
+            )?,
             other => return Err(format!("unknown query `{other}`").into()),
         };
         println!("{{\"query\":\"{}\",\"status\":{status},\"instructions\":{n}}}", line.trim());

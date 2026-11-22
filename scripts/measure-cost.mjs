@@ -178,6 +178,9 @@ const geoEcl = await measure(benchWasm, eclPath, [
   [`occulted 10 399 301 ${toHex(tLunar)}`, 'lite_occulted, Sun by Earth from the Moon (full)', 'occulted'],
   [`occulted 399 10 301 ${toHex(tLunar)}`, 'lite_occulted, Earth by the Sun from the Moon (the Sun is behind)', 'occulted'],
   [`occulted 10 399 301 ${toHex(tE)}`, 'lite_occulted, Sun by Earth from the Moon, far apart in the sky (none)', 'occulted'],
+  [`occcorr 10 399 301 ${toHex(tLunar)} 1`, 'lite_occulted_corr with light time, Sun by Earth from the Moon (full)', 'occultedLt'],
+  [`occcorr 399 301 10 ${toHex(tSolar)} 1`, 'lite_occulted_corr with light time, Earth by the Moon from the Sun (partial)', 'occultedLt'],
+  [`occcorr 10 399 301 ${toHex(tE)} 1`, 'lite_occulted_corr with light time, Sun by Earth from the Moon, far apart in the sky (none)', 'occultedLt'],
   [horizonSite(399, EARTH, 10, -dip - 0.006, 0.002), 'lite_set_state', null],
   [`occulted 10 399 -900 ${toHex(tE)}`, 'lite_occulted, Sun by Earth from 2 m above its surface, Sun below the horizon (full)', 'occulted'],
   [horizonSite(399, EARTH, 10, -dip + 0.0045, 0.002), 'lite_set_state', null],
@@ -191,6 +194,8 @@ const geoSoi = await measure(benchWasm, resolve(root, 'test/blobs/saturn-soi.slb
   [`occulted 10 699 -82 ${toHex(tSoi)}`, 'lite_occulted, Sun by Saturn from Cassini (full)', 'occulted'],
   [`occulted 399 699 -82 ${toHex(tSoi)}`, 'lite_occulted, Earth by Saturn from Cassini (two ellipsoids, full)', 'occulted'],
   [`occulted 10 699 -82 ${toHex(tSoi - 6 * 3600)}`, 'lite_occulted, Sun by Saturn from Cassini, six hours earlier (none)', 'occulted'],
+  [`occcorr 10 699 -82 ${toHex(tSoi)} 1`, 'lite_occulted_corr with light time, Sun by Saturn from Cassini (full)', 'occultedLt'],
+  [`occcorr 399 699 -82 ${toHex(tSoi)} 1`, 'lite_occulted_corr with light time, Earth by Saturn from Cassini (two ellipsoids, full)', 'occultedLt'],
 ], 'geometry-soi');
 // The costliest path needs two oriented ellipsoids and the search at once, which
 // no pair in the test blobs gives: the Moon is round. So a copy of the eclipses
@@ -215,10 +220,11 @@ const geoOblate = await measure(benchWasm, oblatePath, [
   ['init 1', 'lite_init, checksum skipped', null],
   [horizonSite(399, EARTH, 301, -dip + 0.0052, 0.002), 'lite_set_state', null],
   [`occulted 301 399 -900 ${toHex(tE)}`, 'lite_occulted, a Moon with unequal radii by Earth from 2 m above its surface, just clear of the horizon (two ellipsoids, none, by the full search)', 'occulted'],
+  [`occcorr 301 399 -900 ${toHex(tE)} 1`, 'lite_occulted_corr with light time, the same place a moment on (two ellipsoids, by the search)', 'occultedLt'],
 ], 'geometry-oblate');
 const geometryRows = [...geoEcl.rows, ...geoSoi.rows, ...geoOblate.rows].filter((r) => /sub_point|occulted/.test(r.label));
 // Ceilings from SPEC.md for the two geometry calls, in instructions.
-const geometryBudgets = { subpoint: 8000, occulted: 18000 };
+const geometryBudgets = { subpoint: 8000, occulted: 18000, occultedLt: 25000 };
 for (const r of geometryRows) if (r.instructions > geometryBudgets[r.budget]) failures.push(`${r.label}: ${r.instructions} instructions, ceiling ${geometryBudgets[r.budget]}`);
 
 const result = { spacewasm: '0.8.0-rc.3', full, flight, pageUse, crc: crcRows, checksums: sumRows, budgets, geometry: geometryRows, geometryBudgets };

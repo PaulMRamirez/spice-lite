@@ -74,6 +74,11 @@ export async function load(blobBytes, { skipCrc = false } = {}) {
       const st = x.lite_occulted(target, by, observer, et, out);
       return { status: st, code: i32(0) };
     },
+    // lite_occulted under an aberration correction (0 none, 1 light time).
+    occultedCorr(target, by, observer, et, corr) {
+      const st = x.lite_occulted_corr(target, by, observer, et, corr, out, out + 4, out + 8);
+      return { status: st, code: i32(0), target: i32(4), by: i32(8) };
+    },
     // lite_occulted with the shape each body was modeled as; the two shape
     // slots are preset to -1 so a call that must not write them can be seen.
     occultedShapes(target, by, observer, et) {
@@ -97,6 +102,7 @@ export async function load(blobBytes, { skipCrc = false } = {}) {
         case 'siteview': { const r = api.siteView(+t[1], +t[2], fromHex(t[3]), +t[4]); return r.status + (r.status === 0 ? hx([r.az, r.el, r.range]) : ''); }
         case 'subpoint': { const r = api.subPoint(+t[1], +t[2], fromHex(t[3])); return r.status + (r.status === 0 ? hx([r.lon, r.lat, r.alt]) : ''); }
         case 'occulted': { const r = api.occulted(+t[1], +t[2], +t[3], fromHex(t[4])); return r.status + (r.status === 0 ? ' i' + r.code : ''); }
+        case 'occcorr': { const r = api.occultedCorr(+t[1], +t[2], +t[3], fromHex(t[4]), +t[5]); return r.status + (r.status === 0 ? ` i${r.code} i${r.target} i${r.by}` : ''); }
         case 'occshapes': { const r = api.occultedShapes(+t[1], +t[2], +t[3], fromHex(t[4])); return r.status + (r.status === 0 ? ` i${r.code} i${r.target} i${r.by}` : ''); }
         default: return '?';
       }
