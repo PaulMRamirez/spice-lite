@@ -173,6 +173,62 @@ async function mergePieces(truth, accepted, tol, fitSamples, checkSamples) {
   return out;
 }
 
+// Cuts the pieces for a list of stretches of readings. Each stretch is
+// { partition, uLo, uHi, starts, truth }: its readings run from uLo to uHi, a
+// new piece must start at each reading in starts, and truth(u) is the ET of
+// reading u. Shared by the spacecraft clock form and the Unix time form.
+async function cutStretches(stretches, entry, who) {
+  const tol = entry.maxErrorSeconds;
+  const maxPieces = entry.maxPieces ?? 256;
+  const budget = {
+    left: maxPieces,
+    error: () => new Error(`${who}: more than ${maxPieces} linear pieces are needed to hold ${tol} s over the window; raise maxErrorSeconds or maxPieces, or shorten the window`),
+  };
+  // With mergeRecords the first pass may need more pieces than the blob will
+  // hold in the end, so it runs without the limit and the limit is applied to
+  // what is left after merging.
+  const firstPass = entry.mergeRecords ? { left: Infinity, error: budget.error } : budget;
+  const fitSamples = 128, checkSamples = 2048;
+  const out = [];
+  const perPartition = [];
+  let worst = 0, worstAt = null, samples = 0;
+  for (const s of stretches) {
+    const truth = s.truth;
+    let accepted = [];
+    for (let k = 0; k < s.starts.length; k++) {
+      const uA = s.starts[k], uB = k + 1 < s.starts.length ? s.starts[k + 1] - 1 : s.uHi;
+      // Fit under a slightly tighter target so the dense check has room for
+      // what falls between the fit's samples; if a piece still fails the dense
+      // check (a discontinuity the kernel text did not announce, say), refit
+      // its span tighter and with more samples before giving up.
+      let pending = [{ uA, uB, target: 0.9 * tol, n: fitSamples, depth: 0 }];
+      while (pending.length) {
+        const job = pending.shift();
+        const pieces = await fitStretch(truth, job.uA, job.uB, job.target, job.n, firstPass);
+        for (const piece of pieces) {
+          const m = await measure(truth, piece, checkSamples);
+          if (m.worst > tol) {
+            if (job.depth >= 4) throw new Error(`${who}: could not hold ${tol} s near host second ${hostOf(m.at)} (measured ${m.worst} s); the tolerance may be below what 64-bit times resolve there`);
+            pending.push({ uA: piece.u0, uB: piece.u1, target: job.target * 0.8, n: job.n * 2, depth: job.depth + 1 });
+            continue;
+          }
+          firstPass.left--;
+          accepted.push({ piece, m, records: 1 });
+        }
+      }
+    }
+    if (entry.mergeRecords) accepted = await mergePieces(truth, accepted, tol, fitSamples, checkSamples);
+    for (const { piece, m } of accepted) {
+      samples += m.samples;
+      if (m.worst > worst) { worst = m.worst; worstAt = hostOf(m.at); }
+      out.push({ base: entry.base, hostStart: piece.hostStart, etStart: piece.etStart, rate: piece.rate });
+    }
+    perPartition.push({ partition: s.partition, hostFirst: hostOf(s.uLo), hostLast: hostOf(s.uHi), pieces: accepted.length });
+  }
+  if (out.length > maxPieces) throw budget.error();
+  return { out, perPartition, worst, worstAt, samples };
+}
+
 // ---- the entry point --------------------------------------------------------
 
 // entry: { base, sclk, maxErrorSeconds, maxPieces?, partition?, mergeRecords? }
@@ -238,56 +294,78 @@ export async function sclkTimePieces(spice, entry, window) {
     }
   }
 
-  const budget = {
-    left: maxPieces,
-    error: () => new Error(`${who}: more than ${maxPieces} linear pieces are needed to hold ${tol} s over the window; raise maxErrorSeconds or maxPieces, or shorten the window`),
-  };
-  // With mergeRecords the first pass may need more pieces than the blob will
-  // hold in the end, so it runs without the limit and the limit is applied to
-  // what is left after merging.
-  const firstPass = entry.mergeRecords ? { left: Infinity, error: budget.error } : budget;
-  const fitSamples = 128, checkSamples = 2048;
-  const out = [];
-  const perPartition = [];
-  let worst = 0, worstAt = null, samples = 0;
-  for (const s of stretches) {
-    const truth = (u) => spice.sct2e(entry.sclk, s.encOf(u));
-    let accepted = [];
-    for (let k = 0; k < s.starts.length; k++) {
-      const uA = s.starts[k], uB = k + 1 < s.starts.length ? s.starts[k + 1] - 1 : s.uHi;
-      // Fit under a slightly tighter target so the dense check has room for
-      // what falls between the fit's samples; if a piece still fails the dense
-      // check (a discontinuity the kernel text did not announce, say), refit
-      // its span tighter and with more samples before giving up.
-      let pending = [{ uA, uB, target: 0.9 * tol, n: fitSamples, depth: 0 }];
-      while (pending.length) {
-        const job = pending.shift();
-        const pieces = await fitStretch(truth, job.uA, job.uB, job.target, job.n, firstPass);
-        for (const piece of pieces) {
-          const m = await measure(truth, piece, checkSamples);
-          if (m.worst > tol) {
-            if (job.depth >= 4) throw new Error(`${who}: could not hold ${tol} s near host second ${hostOf(m.at)} (measured ${m.worst} s); the tolerance may be below what 64-bit times resolve there`);
-            pending.push({ uA: piece.u0, uB: piece.u1, target: job.target * 0.8, n: job.n * 2, depth: job.depth + 1 });
-            continue;
-          }
-          firstPass.left--;
-          accepted.push({ piece, m, records: 1 });
-        }
-      }
-    }
-    if (entry.mergeRecords) accepted = await mergePieces(truth, accepted, tol, fitSamples, checkSamples);
-    for (const { piece, m } of accepted) {
-      samples += m.samples;
-      if (m.worst > worst) { worst = m.worst; worstAt = hostOf(m.at); }
-      out.push({ base: entry.base, hostStart: piece.hostStart, etStart: piece.etStart, rate: piece.rate });
-    }
-    perPartition.push({ partition: s.p.partition, hostFirst: hostOf(s.uLo), hostLast: hostOf(s.uHi), pieces: accepted.length });
-  }
-  if (out.length > maxPieces) throw budget.error();
+  for (const st of stretches) { st.partition = st.p.partition; st.truth = (u) => spice.sct2e(entry.sclk, st.encOf(u)); }
+  const { out, perPartition, worst, worstAt, samples } = await cutStretches(stretches, entry, who);
   const fit = {
     base: entry.base, sclk: entry.sclk, timeSystem: clock.timeSystem === 2 ? 'TT' : clock.timeSystem === 1 ? 'TDB' : `system ${clock.timeSystem}`,
     ticksPerHostSecond: T, toleranceSeconds: tol, maxErrSeconds: worst, maxErrAtHostSecond: worstAt,
     pieces: out.length, maxPieces, checkedReadings: samples, partitions: perPartition,
+  };
+  return { pieces: out, fit };
+}
+
+// ---- Unix time --------------------------------------------------------------
+
+// The TIME pieces for a host that reports Unix time: seconds since 1970-01-01
+// UTC with leap seconds not counted, which is what F Prime's own time
+// components (Svc/PosixTime, Svc/ChronoTime) put in an Fw::Time under
+// TB_WORKSTATION_TIME, and what any POSIX clock gives.
+//
+// entry: { base, unix: true, maxErrorSeconds, maxPieces? }
+//
+// CSPICE is the truth: TAI minus UTC comes from the leapseconds kernel (through
+// str2et on the reading's calendar time) and ET from TAI through unitim, so
+// leap seconds and the periodic TDB term are folded in. A new piece starts at the first reading after each leap
+// second inside the window, where the map steps by a second. During a leap
+// second itself Unix time has no reading of its own (23:59:60 is counted as
+// the 00:00:00 that follows), so for that one second the answer is a second
+// late: a limit of Unix time, not of the pieces.
+export async function unixTimePieces(spice, entry, window) {
+  const who = `time base ${entry.base}, Unix time`;
+  if (!Number.isInteger(entry.base)) throw new Error(`${who}: base must be an integer`);
+  if (!(entry.maxErrorSeconds > 0) || !Number.isFinite(entry.maxErrorSeconds)) throw new Error(`${who}: maxErrorSeconds must be a positive number`);
+  const utc = (u) => {
+    const sec = Math.floor(u / US);
+    return new Date(sec * 1000).toISOString().slice(0, 19) + '.' + String(u - sec * US).padStart(6, '0');
+  };
+  // Parsing a calendar string costs a few units in the last place of ET, which
+  // is noise a microsecond tolerance can see. So the string is parsed only to
+  // learn TAI minus UTC, a whole number of seconds that changes only at a leap
+  // second; from there ET comes from unitim, which is smooth.
+  const J2000_UNIX = 946728000; // 2000-01-01T12:00:00 UTC
+  const taiMinusUtc = async (u) => Math.round((await spice.unitim(await spice.str2et(utc(u)), 'TDB', 'TAI')) - (u / US - J2000_UNIX));
+  const rough = (u) => spice.str2et(utc(u));
+  // The window's ends as readings: the first reading at or after its start and
+  // the last at or before its end.
+  const edge = async (et, up) => {
+    let lo = 0, hi = 4294967296 * US - 1;
+    if (await rough(lo) > et || await rough(hi) < et) throw new Error(`${who}: the window is outside what a 32-bit count of Unix seconds can hold`);
+    while (hi - lo > 1) { const mid = lo + Math.floor((hi - lo) / 2); if (await rough(mid) < et) lo = mid; else hi = mid; }
+    const at = (await rough(lo)) >= et ? lo : hi; // first reading at or after et
+    return up ? at : ((await rough(at)) > et ? at - 1 : at);
+  };
+  const uLo = await edge(window[0], true), uHi = await edge(window[1], false);
+  if (uHi < uLo) throw new Error(`${who}: no reading falls inside the blob's window`);
+  // Leap seconds are inserted at the end of a UTC month: at each month start
+  // inside the stretch, see whether TAI minus UTC has changed.
+  const starts = [uLo], offsets = [await taiMinusUtc(uLo)];
+  const d = new Date(Math.floor(uLo / US) * 1000);
+  for (let y = d.getUTCFullYear(), m = d.getUTCMonth() + 1; ; m++) {
+    const u = Date.UTC(y, m, 1) * 1000;
+    if (u > uHi) break;
+    if (u <= uLo) continue;
+    const offset = await taiMinusUtc(u);
+    if (offset !== offsets[offsets.length - 1]) { starts.push(u); offsets.push(offset); }
+  }
+  const truth = (u) => {
+    let k = starts.length - 1;
+    while (k > 0 && u < starts[k]) k--;
+    return spice.unitim((u - J2000_UNIX * US) / US + offsets[k], 'TAI', 'TDB');
+  };
+  const { out, perPartition, worst, worstAt, samples } = await cutStretches([{ partition: 1, uLo, uHi, starts, truth }], entry, who);
+  const fit = {
+    base: entry.base, unix: true, timeSystem: 'UTC', ticksPerHostSecond: 1, toleranceSeconds: entry.maxErrorSeconds, maxErrSeconds: worst, maxErrAtHostSecond: worstAt,
+    pieces: out.length, maxPieces: entry.maxPieces ?? 256, checkedReadings: samples, leapSeconds: starts.length - 1, partitions: perPartition,
   };
   return { pieces: out, fit };
 }
