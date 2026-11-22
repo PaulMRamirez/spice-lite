@@ -4,9 +4,10 @@ name: real-kernels
 # fails unless every table they write into the documents comes out as it is
 # committed. The kernels are public NAIF products, about 185 MB, fetched from
 # naif.jpl.nasa.gov and checked against the hashes in tools/real-kernels.json;
-# none is committed. The run takes about three quarters of an hour, so it is
-# not part of the per-push checks: it runs weekly, on demand, and on pull
-# requests that change the tools or tables it covers.
+# none is committed. The measurements take two or three minutes on a runner,
+# but they depend on a download from an outside server, so they are kept out of
+# the per-push checks: this runs weekly, on demand, and on pull requests that
+# change the tools or tables it covers.
 
 on:
   workflow_dispatch:

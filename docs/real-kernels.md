@@ -24,7 +24,7 @@ node tools/real-kernels.mjs --fetch          # curl each file into kernels/real 
 node tools/real-kernels.mjs --update-doc     # measure, and rewrite the tables here and in docs/orbit-segment.md
 ```
 
-`SPICE_LITE_REAL_KERNELS` names another directory. The measurement takes about a quarter of an hour; `--clocks` and `--burn` rerun only the clock table or only the maneuver table, in seconds. `node tools/real-orbit-study.mjs --update-doc` runs two follow-up studies on the same kernels (a Chebyshev segment held to the cost ceiling, and a prototype of rotation terms for the orbit segment) and takes about as long; their tables are in `docs/orbit-segment.md` too.
+`SPICE_LITE_REAL_KERNELS` names another directory. The measurement takes a few minutes (under three on the CI runner); `--clocks` and `--burn` rerun only the clock table or only the maneuver table, in seconds. `node tools/real-orbit-study.mjs --update-doc` runs two follow-up studies on the same kernels (a Chebyshev segment held to the cost ceiling, and a prototype of rotation terms for the orbit segment) and takes about a minute; their tables are in `docs/orbit-segment.md` too.
 
 ## The clock mapping on real clocks
 
