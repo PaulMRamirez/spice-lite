@@ -201,6 +201,54 @@ test('mergeRecords joins pieces across coefficient records where the tolerance a
   assert.deepEqual((await cut(1e-6, false)).report.time, (await cut(1e-6, undefined)).report.time);
 });
 
+test('Unix time: a host that reports seconds since 1970 UTC, as F Prime\'s own time components do', { skip }, async () => {
+  await setup();
+  const { unixTimePieces } = await import('../tools/sclk-time.mjs');
+  const utcOf = (sec, usec) => new Date(sec * 1000).toISOString().slice(0, 19) + '.' + String(usec).padStart(6, '0');
+  // This test's truth is str2et on a calendar string, which is good to a few
+  // units in the last place of ET (0.03 microseconds each in 2004, 0.06 in 2017).
+  const PARSE = 2e-7;
+  // Through the slicer and the library: TB_WORKSTATION_TIME is time base 2.
+  const { blob, report } = await slice(configFor('unix', JUNE, [{ base: 2, unix: true, maxErrorSeconds: 1e-6 }]), kernelDir, blobDir);
+  const fit = report.timeFit[0];
+  assert.equal(fit.unix, true);
+  assert.equal(fit.leapSeconds, 0);
+  assert.ok(fit.maxErrSeconds <= 1e-6);
+  assert.deepEqual([fit.partitions[0].hostFirst, fit.partitions[0].hostLast], [Date.UTC(2004, 5, 27) / 1000, Date.UTC(2004, 6, 27) / 1000], 'the window in Unix seconds');
+  const api = await load(blob);
+  assert.equal(api.initStatus, 0);
+  const rnd = prng(41);
+  let worst = 0;
+  const readings = [[fit.partitions[0].hostFirst, 0], [fit.partitions[0].hostLast, 0]];
+  for (let i = 0; i < 2000; i++) readings.push([fit.partitions[0].hostFirst + Math.floor(rnd() * 30 * 86400), Math.floor(rnd() * 1e6)]);
+  for (const p of report.time) { const [s0, u0] = split(p.hostStart); readings.push([s0, u0]); }
+  for (const [sec, usec] of readings) {
+    const got = api.host2et(2, sec, usec), want = await spice.str2et(utcOf(sec, usec));
+    assert.equal(got.status, 0);
+    assert.ok(Math.abs(got.et - want) <= 1e-6 + PARSE, `${utcOf(sec, usec)} is off by ${Math.abs(got.et - want)} s`);
+    worst = Math.max(worst, Math.abs(got.et - want));
+    const viaBytes = api.fwtime(fwBytes(2, sec, usec));
+    assert.equal(viaBytes.et, got.et, 'the serialized F Prime time gives the same bits');
+  }
+  assert.equal(api.host2et(3, readings[5][0], 0).status, 1, 'the spacecraft time base is not in this blob');
+  console.log(`  Unix time, 30 days: ${fit.pieces} pieces, slicer measured ${fit.maxErrSeconds.toExponential(2)} s, this test saw at most ${worst.toExponential(2)} s over ${readings.length} readings`);
+  // Across a leap second (the one at the end of 2016): a piece starts at the
+  // first reading after it, and the map steps by a second there.
+  const window = [await spice.str2et('2016-12-25T00:00:00'), await spice.str2et('2017-01-08T00:00:00')];
+  const leap = await unixTimePieces(spice, { base: 2, unix: true, maxErrorSeconds: 1e-6 }, window);
+  const boundary = Date.UTC(2017, 0, 1) / 1000;
+  assert.equal(leap.fit.leapSeconds, 1);
+  assert.ok(leap.pieces.some((p) => p.hostStart === boundary), 'a piece starts at 2017-01-01T00:00:00');
+  const evalAt = (host) => { const p = [...leap.pieces].reverse().find((q) => q.hostStart <= host); return p.etStart + p.rate * (host - p.hostStart); };
+  for (const [sec, usec] of [[boundary - 1, 999999], [boundary, 0], [boundary + 1, 0], [boundary - 86400, 500000], [boundary + 86400, 500000]]) {
+    const want = await spice.str2et(utcOf(sec, usec));
+    assert.ok(Math.abs(evalAt(sec + usec * 1e-6) - want) <= 1e-6 + PARSE, `${utcOf(sec, usec)} across the leap second`);
+  }
+  assert.ok(Math.abs(evalAt(boundary) - evalAt(boundary - 1e-6) - 1) < 1e-4, 'ET steps by the leap second between the last reading of 2016 and the first of 2017');
+  // A tolerance that is not a positive number is refused, as for a spacecraft clock.
+  await assert.rejects(unixTimePieces(spice, { base: 2, unix: true, maxErrorSeconds: 0 }, window), /maxErrorSeconds must be a positive number/);
+});
+
 test('the cassini-demo clock is one line', { skip }, async () => {
   await setup();
   for (const tol of [1e-6, 1e-3]) {

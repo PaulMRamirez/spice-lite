@@ -17,7 +17,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, resolve, basename } from 'node:path';
 import { createSpiceEngine } from 'cspice-wasm';
-import { sclkTimePieces } from './sclk-time.mjs';
+import { sclkTimePieces, unixTimePieces } from './sclk-time.mjs';
 import { sliceOrbit } from './orbit-model.mjs';
 
 export const SLICER_VERSION = '0.1.0';
@@ -404,13 +404,14 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
   sites.sort((a, b) => a.id - b.id);
 
   // TIME pieces: an entry that names a spacecraft clock ("sclk") is derived from
-  // the SCLK kernel within its tolerance (tools/sclk-time.mjs); any other entry
-  // is one explicit piece, written as given.
+  // the SCLK kernel within its tolerance, and one marked "unix" from the
+  // leapseconds kernel (tools/sclk-time.mjs); any other entry is one explicit
+  // piece, written as given.
   const pieces = [];
   const timeFit = [];
   for (const t of config.time ?? []) {
-    if (t.sclk !== undefined) {
-      const derived = await sclkTimePieces(spice, t, window);
+    if (t.sclk !== undefined || t.unix) {
+      const derived = t.unix ? await unixTimePieces(spice, t, window) : await sclkTimePieces(spice, t, window);
       pieces.push(...derived.pieces);
       timeFit.push(derived.fit);
     } else {
@@ -435,7 +436,7 @@ export async function slice(config, kernelDir, configDir = kernelDir) {
   };
   if (timeFit.length) {
     report.timeFit = timeFit;
-    prov.time = timeFit.map((f) => ({ base: f.base, sclk: f.sclk, pieces: f.pieces, toleranceS: f.toleranceSeconds, maxErrS: f.maxErrSeconds }));
+    prov.time = timeFit.map((f) => ({ base: f.base, ...(f.unix ? { unix: true } : { sclk: f.sclk }), pieces: f.pieces, toleranceS: f.toleranceSeconds, maxErrS: f.maxErrSeconds }));
   }
   const rootIsSsb = roots[0].id === 0;
   const blob = buildBlob({ time, bodies, ephem, orient, sites, prov, flags: rootIsSsb ? 1 : 0, created, coverage });
@@ -463,6 +464,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log(`  orient ${s.body}: ${s.recordCount} records, degree ${s.degree}, ${s.bytes} bytes, max error ${s.maxErr.toExponential(2)} rad`);
   }
   for (const f of report.timeFit ?? []) {
-    console.log(`  time base ${f.base} from clock ${f.sclk}: ${f.pieces} pieces, max error ${f.maxErrSeconds.toExponential(2)} s (tolerance ${f.toleranceSeconds.toExponential(2)} s)`);
+    console.log(`  time base ${f.base} from ${f.unix ? 'Unix time' : `clock ${f.sclk}`}: ${f.pieces} pieces, max error ${f.maxErrSeconds.toExponential(2)} s (tolerance ${f.toleranceSeconds.toExponential(2)} s)`);
   }
 }
