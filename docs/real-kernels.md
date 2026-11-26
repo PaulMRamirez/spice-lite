@@ -35,19 +35,21 @@ The slicer turns an SCLK kernel into the TIME pieces of a blob: the fewest strai
 <!-- clocks-real:start -->
 | Clock | Window | Tolerance asked | Kernel records that begin inside | Pieces | TIME bytes | Worst error against CSPICE | Pieces with `mergeRecords` | Worst error with it |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Lunar Reconnaissance Orbiter | 1 d from 2010-01-15 | 1 microsecond | 2 | 3 | 96 | 0.12 microseconds | 3 | 0.12 microseconds |
-| Lunar Reconnaissance Orbiter | 1 d from 2010-01-15 | 1 millisecond | 2 | 3 | 96 | 0.12 microseconds | 1 | 433.50 microseconds |
-| Lunar Reconnaissance Orbiter | 30 d from 2010-01-15 | 1 microsecond | 171 | 172 | 5504 | 0.36 microseconds | 169 | 0.72 microseconds |
-| Lunar Reconnaissance Orbiter | 30 d from 2010-01-15 | 1 millisecond | 171 | 172 | 5504 | 0.36 microseconds | 12 | 625.55 microseconds |
-| Mars Reconnaissance Orbiter | 1 d from 2009-01-10 | 1 microsecond | 0 | 1 | 32 | 0.06 microseconds | 1 | 0.06 microseconds |
-| Mars Reconnaissance Orbiter | 1 d from 2009-01-10 | 1 millisecond | 0 | 1 | 32 | 0.06 microseconds | 1 | 0.06 microseconds |
-| Mars Reconnaissance Orbiter | 30 d from 2009-01-10 | 1 microsecond | 0 | 4 | 128 | 0.95 microseconds | 4 | 0.95 microseconds |
-| Mars Reconnaissance Orbiter | 30 d from 2009-01-10 | 1 millisecond | 0 | 1 | 32 | 10.79 microseconds | 1 | 10.79 microseconds |
-| MAVEN | 1 d from 2015-01-16 | 1 microsecond | 0 | 1 | 32 | 0.06 microseconds | 1 | 0.06 microseconds |
-| MAVEN | 1 d from 2015-01-16 | 1 millisecond | 0 | 1 | 32 | 0.06 microseconds | 1 | 0.06 microseconds |
-| MAVEN | 30 d from 2015-01-16 | 1 microsecond | 1 | 5 | 160 | 0.95 microseconds | 5 | 0.95 microseconds |
-| MAVEN | 30 d from 2015-01-16 | 1 millisecond | 1 | 2 | 64 | 12.52 microseconds | 2 | 12.52 microseconds |
+| Lunar Reconnaissance Orbiter | 1 d from 2010-01-15 | 1 microsecond | 2 | 3 | 128 | 0.12 microseconds | 3 | 0.12 microseconds |
+| Lunar Reconnaissance Orbiter | 1 d from 2010-01-15 | 1 millisecond | 2 | 3 | 128 | 0.12 microseconds | 1 | 433.50 microseconds |
+| Lunar Reconnaissance Orbiter | 30 d from 2010-01-15 | 1 microsecond | 171 | 172 | 5536 | 0.36 microseconds | 169 | 0.72 microseconds |
+| Lunar Reconnaissance Orbiter | 30 d from 2010-01-15 | 1 millisecond | 171 | 172 | 5536 | 0.36 microseconds | 12 | 625.55 microseconds |
+| Mars Reconnaissance Orbiter | 1 d from 2009-01-10 | 1 microsecond | 0 | 1 | 64 | 0.06 microseconds | 1 | 0.06 microseconds |
+| Mars Reconnaissance Orbiter | 1 d from 2009-01-10 | 1 millisecond | 0 | 1 | 64 | 0.06 microseconds | 1 | 0.06 microseconds |
+| Mars Reconnaissance Orbiter | 30 d from 2009-01-10 | 1 microsecond | 0 | 4 | 160 | 0.95 microseconds | 4 | 0.95 microseconds |
+| Mars Reconnaissance Orbiter | 30 d from 2009-01-10 | 1 millisecond | 0 | 1 | 64 | 10.79 microseconds | 1 | 10.79 microseconds |
+| MAVEN | 1 d from 2015-01-16 | 1 microsecond | 0 | 1 | 64 | 0.06 microseconds | 1 | 0.06 microseconds |
+| MAVEN | 1 d from 2015-01-16 | 1 millisecond | 0 | 1 | 64 | 0.06 microseconds | 1 | 0.06 microseconds |
+| MAVEN | 30 d from 2015-01-16 | 1 microsecond | 1 | 5 | 192 | 0.95 microseconds | 5 | 0.95 microseconds |
+| MAVEN | 30 d from 2015-01-16 | 1 millisecond | 1 | 2 | 96 | 12.52 microseconds | 2 | 12.52 microseconds |
 <!-- clocks-real:end -->
+
+The bytes are 32 for each piece and 32 more for the gap the slicer writes after the window's last reading, which is its default since 0.2.0 was tagged.
 
 All three clocks are type 1 SCLK kernels on TT, which is the one type the slicer reads. LRO and MAVEN count in ticks of 1/65536 of a second and MRO in 1/256; the LRO kernel has one partition and 1,678 coefficient records, MRO 31 partitions and 142 records, MAVEN 3 partitions and 147 records. In every row the measured error is inside the tolerance asked for, with and without `mergeRecords`.
 

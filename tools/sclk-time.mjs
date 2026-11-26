@@ -228,7 +228,7 @@ async function cutStretches(stretches, entry, who) {
     // another stretch begins exactly there. That covers the counts between two
     // partitions that the clock never showed, and every reading after the
     // window's last.
-    if (entry.refuseGaps && !stretches.some((q) => q.uLo === s.uHi + 1)) {
+    if (entry.refuseGaps !== false && !stretches.some((q) => q.uLo === s.uHi + 1)) {
       out.push({ base: entry.base, ...ctx, hostStart: hostOf(s.uHi + 1), etStart: 0, rate: 0, gap: true });
       gaps++;
     }

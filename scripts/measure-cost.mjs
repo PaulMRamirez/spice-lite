@@ -257,9 +257,9 @@ const tables = { full: tableOf(full.rows), flight: tableOf(flight.rows), crc: cr
     { base: 5, hostStart: 0, etStart: 0, rate: 1 }];
   const blobs = [
     ['sun-earth-moon (committed)', new Uint8Array(readFileSync(smallPath))],
-    ['sclk-drift (committed; the synthetic drifting clock to a microsecond)', carrier],
+    ['sclk-drift (committed; the synthetic drifting clock to a microsecond: six pieces and two gaps)', carrier],
     ['the first 26 clock pieces of sclk-many (30 days to 0.1 microseconds)', withTimeTable(carrier, clock.slice(0, 26), { fixCrc: false })],
-    ['sclk-many (committed; 203 clock pieces and three of other bases)', many],
+    ['sclk-many (committed; 203 clock pieces, the gap that ends them, and three of other bases)', many],
     ['synthetic table of 256 pieces (the slicer\'s default limit for one clock)', withTimeTable(carrier, synthetic(256), { fixCrc: false })],
     ['synthetic table of 4,096 pieces (the most the format allows)', withTimeTable(carrier, synthetic(4096), { fixCrc: false })],
   ];
@@ -297,7 +297,7 @@ const tables = { full: tableOf(full.rows), flight: tableOf(flight.rows), crc: cr
   result.time = timeRows;
   writeFileSync(resolve(root, 'build/cost.json'), JSON.stringify(result, null, 2) + '\n');
   if (!timeRows.some((r) => r.held && r.pieces >= 200)) failures.push('time: no table of 200 or more pieces was measured against the ceiling');
-  tables.time = ['| TIME pieces | Blob | Readings | Fewest instructions | Most instructions | Held to 500 |', '| --- | --- | --- | --- | --- | --- |',
+  tables.time = ['| TIME entries | Blob | Readings | Fewest instructions | Most instructions | Held to 500 |', '| --- | --- | --- | --- | --- | --- |',
     ...timeRows.map((r) => `| ${fmt(r.pieces)} | ${r.label} | ${fmt(r.readings)} | ${fmt(r.fewest)} | ${fmt(r.most)} | ${r.held ? 'yes' : 'no'} |`)].join('\n');
 }
 

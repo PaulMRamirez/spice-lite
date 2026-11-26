@@ -204,7 +204,7 @@ for (const c of only && only !== '--clocks' ? [] : config.clocks) {
       // coefficient records of the kernel that begin inside the window
       const e0 = await spice.sce2c(c.sclk, t0), e1 = await spice.sce2c(c.sclk, t0 + days * DAY);
       const inside = clock.recordStarts.filter((r) => r > e0 && r <= e1).length;
-      rows.push(`| ${c.label} | ${days} d from ${c.start.slice(0, 10)} | ${tol === 1e-6 ? '1 microsecond' : '1 millisecond'} | ${inside} | ${fit.pieces} | ${fit.pieces * 32} | ${(fit.maxErrSeconds * 1e6).toFixed(2)} microseconds | ${merged.pieces} | ${(merged.maxErrSeconds * 1e6).toFixed(2)} microseconds |`);
+      rows.push(`| ${c.label} | ${days} d from ${c.start.slice(0, 10)} | ${tol === 1e-6 ? '1 microsecond' : '1 millisecond'} | ${inside} | ${fit.pieces} | ${(fit.pieces + (fit.gaps ?? 0)) * 32} | ${(fit.maxErrSeconds * 1e6).toFixed(2)} microseconds | ${merged.pieces} | ${(merged.maxErrSeconds * 1e6).toFixed(2)} microseconds |`);
     }
   }
   console.log(`${c.label}: 1/${clock.ticksPerCount} s ticks, ${clock.partitions.length} partitions, ${clock.recordStarts.length} coefficient records, on ${clock.timeSystem === 2 ? 'TT' : 'TDB'}`);

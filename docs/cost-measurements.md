@@ -150,17 +150,17 @@ Against earlier drafts, which modeled both bodies as spheres at 7,040 to 9,372 i
 `lite_host2et` finds its TIME piece by binary search over entries that the format requires sorted, so its cost follows the number of probes and not the number of pieces. Each row converts many readings on one blob (every piece's first reading and the reading a microsecond before it, a reading far past each base's last piece, and time bases the blob lacks) and gives the cheapest and the costliest; CI holds every row to the 500-instruction ceiling. The synthetic tables are written by the cost script into a copy of the `sclk-drift` blob.
 
 <!-- time-table:start -->
-| TIME pieces | Blob | Readings | Fewest instructions | Most instructions | Held to 500 |
+| TIME entries | Blob | Readings | Fewest instructions | Most instructions | Held to 500 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | sun-earth-moon (committed) | 4 | 82 | 118 | yes |
-| 6 | sclk-drift (committed; the synthetic drifting clock to a microsecond) | 15 | 122 | 177 | yes |
+| 8 | sclk-drift (committed; the synthetic drifting clock to a microsecond: six pieces and two gaps) | 19 | 151 | 205 | yes |
 | 26 | the first 26 clock pieces of sclk-many (30 days to 0.1 microseconds) | 55 | 180 | 237 | yes |
-| 206 | sclk-many (committed; 203 clock pieces and three of other bases) | 416 | 267 | 326 | yes |
+| 207 | sclk-many (committed; 203 clock pieces, the gap that ends them, and three of other bases) | 418 | 267 | 326 | yes |
 | 256 | synthetic table of 256 pieces (the slicer's default limit for one clock) | 515 | 296 | 342 | yes |
 | 4,096 | synthetic table of 4,096 pieces (the most the format allows) | 517 | 412 | 454 | yes |
 <!-- time-table:end -->
 
-A conversion costs about 90 instructions plus 28 for each probe, and a table of n pieces takes at most the whole part of log2(n) plus one probes: one probe for one piece, three for six, five for 26, eight for 206, thirteen for 4,096. The spread within a row is mostly the number of probes a reading happens to need, and the cheapest readings are those of a time base the blob lacks. The format caps the section at 4,096 entries, so the last row is the largest table a blob may hold and every row is held to the ceiling. Before the cap, the largest table a 1 MiB blob could hold (32,717 entries, 15 probes) measured exactly 500, at the ceiling and not safely under it; that is why the cap exists.
+A conversion costs about 90 instructions plus 28 for each probe, and a table of n pieces takes at most the whole part of log2(n) plus one probes: one probe for one entry, four for eight, five for 26, eight for 207, thirteen for 4,096 (a gap is an entry like any other to the search). The spread within a row is mostly the number of probes a reading happens to need, and the cheapest readings are those of a time base the blob lacks. The format caps the section at 4,096 entries, so the last row is the largest table a blob may hold and every row is held to the ceiling. Before the cap, the largest table a 1 MiB blob could hold (32,717 entries, 15 probes) measured exactly 500, at the ceiling and not safely under it; that is why the cap exists.
 
 Before the entries were required sorted, `lite_host2et` read every entry: 60 instructions plus 33 per piece. The same readings on the same blobs, measured with the library as it was then:
 

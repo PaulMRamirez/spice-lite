@@ -81,8 +81,10 @@ async function check(blob, report, seed) {
   const rnd = prng(seed);
   let worst = 0, n = 0;
   for (const fit of report.timeFit) {
-    const pieces = report.time.filter((t) => t.base === fit.base);
+    // Gaps are entries of the table but not pieces: they answer nothing.
+    const pieces = report.time.filter((t) => t.base === fit.base && !t.gap);
     assert.equal(pieces.length, fit.pieces);
+    assert.equal(report.time.filter((t) => t.base === fit.base && t.gap).length, fit.gaps ?? 0);
     assert.ok(fit.maxErrSeconds <= fit.toleranceSeconds, 'the slicer met its own tolerance');
     const compare = async (partition, sec, usec, bound, what) => {
       const enc = encoded(fit.sclk, partition, sec, usec);
@@ -126,11 +128,21 @@ async function check(blob, report, seed) {
     if (below >= 0) assert.equal(api.host2et(fit.base, Math.floor(below / 1e6), below % 1e6).status, 1, 'a reading below the first piece is out of coverage');
     assert.equal(api.host2et(fit.base + 40, ls, lu).status, 1, 'an unknown time base is out of coverage');
     assert.equal(api.host2et(fit.base, ls + 1, 1000000).status, 6, 'a microsecond field of a million is refused');
-    // Past the window the last piece of a partition is extended in a straight
-    // line; one second on, that is still close to CSPICE.
+    // Past the window: a gap starts at the first reading after the last one
+    // (the default), so the very next microsecond is out of coverage, in
+    // every partition's stretch. An entry cut with "refuseGaps": false has no
+    // gap, and its last piece is extended in a straight line; one second on,
+    // that is still close to CSPICE.
     const top = fit.partitions.reduce((a, b) => (b.hostLast > a.hostLast ? b : a));
     const [ts, tu] = split(top.hostLast);
-    if (encoded(fit.sclk, top.partition, ts + 1, tu) !== null) await compare(top.partition, ts + 1, tu, 2 * tol, 'one second past the window');
+    if (fit.gaps) {
+      for (const q of fit.partitions) {
+        const after = Math.round(q.hostLast * 1e6) + 1;
+        if (fit.partitions.some((o) => Math.round(o.hostFirst * 1e6) === after)) continue;
+        assert.equal(api.host2et(fit.base, Math.floor(after / 1e6), after % 1e6).status, 1, `the reading after partition ${q.partition}'s last is refused`);
+      }
+      assert.equal(api.host2et(fit.base, ts + 1, tu).status, 1, 'one second past the window is refused');
+    } else if (encoded(fit.sclk, top.partition, ts + 1, tu) !== null) await compare(top.partition, ts + 1, tu, 2 * tol, 'one second past the window');
     // The serialized F Prime time gives the same bits as the three arguments.
     const mid = fit.partitions[0];
     const [ms, mu] = split((mid.hostFirst + mid.hostLast) / 2);
@@ -222,7 +234,7 @@ test('Unix time: a host that reports seconds since 1970 UTC, as F Prime\'s own t
   let worst = 0;
   const readings = [[fit.partitions[0].hostFirst, 0], [fit.partitions[0].hostLast, 0]];
   for (let i = 0; i < 2000; i++) readings.push([fit.partitions[0].hostFirst + Math.floor(rnd() * 30 * 86400), Math.floor(rnd() * 1e6)]);
-  for (const p of report.time) { const [s0, u0] = split(p.hostStart); readings.push([s0, u0]); }
+  for (const p of report.time.filter((q) => !q.gap)) { const [s0, u0] = split(p.hostStart); readings.push([s0, u0]); }
   for (const [sec, usec] of readings) {
     const got = api.host2et(2, sec, usec), want = await spice.str2et(utcOf(sec, usec));
     assert.equal(got.status, 0);
@@ -232,6 +244,9 @@ test('Unix time: a host that reports seconds since 1970 UTC, as F Prime\'s own t
     assert.equal(viaBytes.et, got.et, 'the serialized F Prime time gives the same bits');
   }
   assert.equal(api.host2et(3, readings[5][0], 0).status, 1, 'the spacecraft time base is not in this blob');
+  // By default the table ends with a gap one microsecond after the window's last reading.
+  assert.equal(fit.gaps, 1);
+  assert.equal(api.host2et(2, fit.partitions[0].hostLast, 1).status, 1, 'a microsecond past the window is refused');
   console.log(`  Unix time, 30 days: ${fit.pieces} pieces, slicer measured ${fit.maxErrSeconds.toExponential(2)} s, this test saw at most ${worst.toExponential(2)} s over ${readings.length} readings`);
   // Across a leap second (the one at the end of 2016): a piece starts at the
   // first reading after it, and the map steps by a second there.
@@ -297,11 +312,14 @@ test('each derived piece carries the error measured for it, and holds it', { ski
   await setup();
   const tol = 1e-6;
   const { blob, report } = await slice(configFor('drift', JUNE, [{ base: 3, sclk: -901, maxErrorSeconds: tol }]), kernelDir, blobDir);
-  const table = readTimeTable(blob), fit = report.timeFit[0];
+  // The pieces, without the gaps that end each stretch: a gap states no error.
+  const table = readTimeTable(blob).filter((t) => !t.gap), fit = report.timeFit[0];
+  const cut = report.time.filter((t) => !t.gap);
   assert.equal(table.length, fit.pieces);
+  assert.ok(readTimeTable(blob).filter((t) => t.gap).every((t) => t.maxErr === 0));
   // Stored as 32-bit floats rounded up, so never below what was measured.
-  table.forEach((t, i) => assert.ok(t.maxErr >= report.time[i].maxErr && t.maxErr <= report.time[i].maxErr * (1 + 2e-7) && t.maxErr > 0 && t.maxErr <= tol, `piece ${i}: ${t.maxErr}`));
-  assert.equal(Math.max(...report.time.map((t) => t.maxErr)), fit.maxErrSeconds, 'the worst piece is the fit\'s worst');
+  table.forEach((t, i) => assert.ok(t.maxErr >= cut[i].maxErr && t.maxErr <= cut[i].maxErr * (1 + 2e-7) && t.maxErr > 0 && t.maxErr <= tol, `piece ${i}: ${t.maxErr}`));
+  assert.equal(Math.max(...cut.map((t) => t.maxErr)), fit.maxErrSeconds, 'the worst piece is the fit\'s worst');
   assert.ok(Math.min(...table.map((t) => t.maxErr)) < 0.5 * fit.maxErrSeconds, 'and the pieces differ, which one number for the table could not say');
   // Every piece against CSPICE at readings of its own, to its own bound plus
   // the spacing of 64-bit ET values in 2004 (0.03 microseconds).
@@ -327,11 +345,12 @@ test('each derived piece carries the error measured for it, and holds it', { ski
   assert.ok(readTimeTable(stated.blob)[0].maxErr >= 2.5e-4 && readTimeTable(stated.blob)[0].maxErr < 2.5e-4 * (1 + 2e-7));
 });
 
-test('refuseGaps: counts the clock never showed, and readings past the window, are out of coverage', { skip }, async () => {
+test('gaps by default: counts the clock never showed, and readings past the window, are out of coverage; "refuseGaps": false leaves them open', { skip }, async () => {
   await setup();
   const entry = { base: 3, sclk: -901, maxErrorSeconds: 1e-6 };
-  const open = await slice(configFor('drift', JUNE, [entry]), kernelDir, blobDir);
-  const shut = await slice(configFor('drift-gaps', JUNE, [{ ...entry, refuseGaps: true }]), kernelDir, blobDir);
+  const open = await slice(configFor('drift-open', JUNE, [{ ...entry, refuseGaps: false }]), kernelDir, blobDir);
+  const shut = await slice(configFor('drift', JUNE, [entry]), kernelDir, blobDir);
+  assert.equal(open.report.timeFit[0].gaps, undefined);
   const fit = shut.report.timeFit[0];
   // Two gaps: after the first partition's last reading and after the window's.
   assert.equal(fit.gaps, 2);
@@ -373,8 +392,8 @@ test('refuseGaps: counts the clock never showed, and readings past the window, a
   }
   assert.ok(gapTo - gapFrom > 1e6, 'the partitions are well apart');
   console.log(`  ${fit.pieces} pieces and ${fit.gaps} gaps; ${same} readings inside the stretches unchanged to the bit, ${refused} outside them refused`);
-  // Unix time takes the option too: one gap, after the window.
-  const unix = await slice(configFor('unix-gaps', JUNE, [{ base: 2, unix: true, maxErrorSeconds: 1e-3, refuseGaps: true }]), kernelDir, blobDir);
+  // Unix time gets one gap, after the window.
+  const unix = await slice(configFor('unix-gaps', JUNE, [{ base: 2, unix: true, maxErrorSeconds: 1e-3 }]), kernelDir, blobDir);
   const ut = readTimeTable(unix.blob);
   assert.equal(ut.filter((t) => t.gap).length, 1);
   assert.ok(ut[ut.length - 1].gap);

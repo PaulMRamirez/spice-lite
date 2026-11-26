@@ -215,7 +215,8 @@ test('an unsorted TIME section is a bad blob, with a valid checksum', async () =
 });
 
 test('TIME gaps, contexts, and error bounds: what lite_init requires of each', async () => {
-  const table = readTimeTable(drift).map(({ maxErr, ...t }) => ({ ...t, maxErr }));
+  // The committed blob's pieces, without the gaps the slicer now ends each stretch with.
+  const table = readTimeTable(drift).filter((t) => !t.gap);
   const loads = async (t, opts) => (await load(withTimeTable(drift, t, opts))).initStatus;
   // An error bound is a number at or above zero.
   assert.equal(await loads(table.map((t, i) => (i === 2 ? { ...t, maxErr: 0 } : t))), 0);

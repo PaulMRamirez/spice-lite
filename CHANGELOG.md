@@ -10,6 +10,11 @@ Documentation and examples:
 - `examples/native/tour.c` makes every call once on a desktop (`pnpm tour`); `examples/getting-started/canberra.json` is the configuration the first guide cuts; `tools/blob-to-c.mjs` writes a blob as a C array, which `scripts/build-sequence.sh` now uses (the module it builds is byte for byte what it was).
 - `test/docs.test.mjs` runs the tour, cuts the guide's blob, and checks every link and anchor between the documents.
 
+Two questions left open in 0.2.0, settled:
+
+- Gaps are the default. A TIME table the slicer derives from a spacecraft clock or as Unix time now ends each stretch of readings with a gap, so counts between two partitions and readings past the window answer out of coverage, where they were converted along the nearest earlier line. `"refuseGaps": false` leaves the gaps out. Such a blob sets header flag bit 3 and needs a library of 0.2.0 or later; explicit pieces are unaffected. The two clock test blobs and their vectors are cut again for it.
+- CRC-32 stays the default checksum. `SPEC.md` (open question 5) has the reasons; Fletcher-32 remains a per-blob choice.
+
 ## 0.2.0 (26 November 2026)
 
 Additions to the blob format, each behind a header flag bit that an 0.1.0 library refuses, so no blob is misread; a blob that uses none of them is what it was, except that a TIME piece the slicer derives now carries its measured error where zeros were.

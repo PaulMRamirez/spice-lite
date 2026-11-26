@@ -1475,6 +1475,13 @@
       "maxErr": 2.9802322387695312e-8
     },
     {
+      "base": 3,
+      "hostStart": 153748864.184001,
+      "etStart": 0,
+      "rate": 0,
+      "gap": true
+    },
+    {
       "base": 5,
       "hostStart": 133000000,
       "etStart": 133012864.18560624,
@@ -1491,6 +1498,7 @@
       "maxErrSeconds": 8.940696716308594e-8,
       "maxErrAtHostSecond": 133012864.184,
       "pieces": 203,
+      "gaps": 1,
       "maxPieces": 256,
       "checkedReadings": 415947,
       "partitions": [
@@ -1503,7 +1511,7 @@
       ]
     }
   ],
-  "bytes": 11448,
+  "bytes": 11496,
   "coverageEt": [
     133012864.18560624,
     153748864.18274346

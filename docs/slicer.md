@@ -188,7 +188,7 @@ It says: from host reading `hostStart` on, ET is the window start plus `etOffset
 | `base` | all | The time base, 0 to 65535 |
 | `maxErrorSeconds` | derived | The tolerance each piece must hold against CSPICE. Required for `unix` and `sclk`. On an explicit piece it is optional and is recorded as that piece's stated bound |
 | `maxPieces` | derived | Fail if more pieces than this would be needed. Default 256 |
-| `refuseGaps` | derived | `true` ends each covered stretch with a gap, so that a reading past the window, or a count the clock never showed, returns `LITE_OUT_OF_COVERAGE`. Without it the last line is extended indefinitely. Recommended for flight blobs |
+| `refuseGaps` | derived | By default each covered stretch ends with a gap, so that a reading past the window, or a count the clock never showed, returns `LITE_OUT_OF_COVERAGE`. `false` leaves the gaps out and the last line is extended indefinitely; that is for a blob a library older than 0.2.0 must read, which refuses gaps |
 | `mergeRecords` | `sclk` | `true` joins pieces across the kernel's coefficient records where the tolerance allows. Worth it for a kernel with many small rate corrections and a tolerance looser than they are |
 | `partition` | `sclk` | Use this one partition of the clock only (counted from 1) |
 | `context` | all | 0 to 255. The pieces then answer only readings that carry this context byte, which is how a clock that was reset fits under one time base |

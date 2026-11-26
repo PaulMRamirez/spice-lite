@@ -57,6 +57,13 @@
     },
     {
       "base": 3,
+      "hostStart": 1500000,
+      "etStart": 0,
+      "rate": 0,
+      "gap": true
+    },
+    {
+      "base": 3,
       "hostStart": 10000000,
       "etStart": 142499999.9499123,
       "rate": 0.9999998996774293,
@@ -82,6 +89,13 @@
       "etStart": 144000000.103437,
       "rate": 0.9999999996962671,
       "maxErr": 5.960464477539063e-8
+    },
+    {
+      "base": 3,
+      "hostStart": 11658464.08,
+      "etStart": 0,
+      "rate": 0,
+      "gap": true
     }
   ],
   "timeFit": [
@@ -94,6 +108,7 @@
       "maxErrSeconds": 9.238719940185547e-7,
       "maxErrAtHostSecond": 10999543.726443,
       "pieces": 6,
+      "gaps": 2,
       "maxPieces": 256,
       "checkedReadings": 12294,
       "partitions": [
@@ -112,7 +127,7 @@
       ]
     }
   ],
-  "bytes": 1624,
+  "bytes": 1696,
   "coverageEt": [
     141566464.1842146,
     144158464.1833889
