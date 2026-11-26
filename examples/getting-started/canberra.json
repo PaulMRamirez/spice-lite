@@ -1,0 +1,21 @@
+{
+  "name": "canberra",
+  "comment": "The blob of docs/getting-started.md: the Sun and the Earth for a week, with one ground site near Canberra, rooted at the solar system barycenter. The host clock is taken to count seconds from the window start under time base 3.",
+  "kernels": ["naif0012.tls", "pck00011.tpc", "de440s-inner-cassini.bsp"],
+  "window": { "start": "2004-07-01T00:00:00", "stop": "2004-07-08T00:00:00" },
+  "bodies": [
+    { "id": 0, "parent": null },
+    { "id": 3, "parent": 0, "interval": 604800, "degree": 10 },
+    { "id": 10, "parent": 0, "interval": 604800, "degree": 8, "radiiFrom": "SUN" },
+    { "id": 399, "parent": 3, "interval": 345600, "degree": 12, "radiiFrom": "EARTH" }
+  ],
+  "orient": [
+    { "body": 399, "frame": "IAU_EARTH", "interval": 604800, "degree": 3 }
+  ],
+  "sites": [
+    { "id": 1, "body": 399, "lonDeg": 148.98, "latDeg": -35.40, "altKm": 0.69 }
+  ],
+  "time": [
+    { "base": 3, "hostStart": 0, "etOffset": 0, "rate": 1.0 }
+  ]
+}

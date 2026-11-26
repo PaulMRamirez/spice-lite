@@ -2,6 +2,14 @@
 
 The blob format is "SLB1", draft 0.1 (`SPEC.md`). Tags are `vX.Y.Z` on `main`.
 
+## Unreleased
+
+Documentation and examples:
+
+- Guides that show use, each linked to the next and to an index (`docs/README.md`): getting started from a clone to a blob of your own running in a sequence, the slicer configuration option by option, the calls by the question each answers with what to do on every status, and the build commands with the memory budget.
+- `examples/native/tour.c` makes every call once on a desktop (`pnpm tour`); `examples/getting-started/canberra.json` is the configuration the first guide cuts; `tools/blob-to-c.mjs` writes a blob as a C array, which `scripts/build-sequence.sh` now uses (the module it builds is byte for byte what it was).
+- `test/docs.test.mjs` runs the tour, cuts the guide's blob, and checks every link and anchor between the documents.
+
 ## 0.2.0 (26 November 2026)
 
 Additions to the blob format, each behind a header flag bit that an 0.1.0 library refuses, so no blob is misread; a blob that uses none of them is what it was, except that a TIME piece the slicer derives now carries its measured error where zeros were.

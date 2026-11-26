@@ -1,5 +1,7 @@
 # The compact orbit segment (EPHEM kind 4), measured
 
+[Documentation index](README.md) · To use this segment: [Cutting a blob: a long arc of a closed orbit](slicer.md#a-long-arc-of-a-closed-orbit) · Related: [Real mission kernels](real-kernels.md)
+
 What kind 4 costs in bytes and in interpreter instructions, how its error grows with record length, why its record has the shape it has, and how it compares with a well-tuned Chebyshev segment (kind 1) on the same arc. `SPEC.md` defines the record and its evaluation; this file holds the numbers and how they were made.
 
 The model was designed and tuned on synthetic orbiters, and has since been measured on three real ones. The synthetic trajectories come from `tools/synth-orbiter.mjs`, which integrates a point mass plus the J2 term about a fixed pole (an eighth-order symplectic integrator at a fixed 10-second step) and hands the result to CSPICE as SPK type 13 segments. The real ones are the reconstructed trajectories of the Lunar Reconnaissance Orbiter, the Mars Reconnaissance Orbiter, and MAVEN, from NAIF's public kernels (`docs/real-kernels.md` lists them; none is committed here). The slicer reads both through CSPICE like any kernel.

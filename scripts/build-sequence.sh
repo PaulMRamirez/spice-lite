@@ -14,14 +14,7 @@ OUT="${SEQUENCE_OUT:-$ROOT/build/sun_watch.wasm}"
 BLOB="${SEQUENCE_BLOB:-$ROOT/test/blobs/sun-earth-moon.slb}"
 mkdir -p "$ROOT/build"
 # The blob as a C array, 8-byte aligned so the library can read doubles in place.
-node -e '
-const fs = require("fs");
-const b = fs.readFileSync(process.argv[1]);
-let out = "#include <stdint.h>\n__attribute__((aligned(8))) const uint8_t sequence_blob[] = {\n";
-for (let i = 0; i < b.length; i += 16) out += "  " + [...b.subarray(i, i + 16)].join(",") + ",\n";
-out += "};\nconst uint32_t sequence_blob_len = " + b.length + "u;\n";
-fs.writeFileSync(process.argv[2], out);
-' "$BLOB" "$ROOT/build/sequence_blob.c"
+node "$ROOT/tools/blob-to-c.mjs" "$BLOB" "$ROOT/build/sequence_blob.c"
 # Compiled and linked as two steps so that clang never runs wasm-opt on the
 # module (see scripts/build-wasm.sh).
 OBJS=()

@@ -1,5 +1,7 @@
 # Cost under SpaceWasm
 
+[Documentation index](README.md) · Related: [Calling the library: what a call costs](api.md#what-a-call-costs), [Building: build-time options](building.md#build-time-options)
+
 What each spice-lite call costs when the library runs as a guest of NASA JPL's SpaceWasm interpreter, measured, with the method. This is tier D of the conformance tiers in `SPEC.md`.
 
 ## Method

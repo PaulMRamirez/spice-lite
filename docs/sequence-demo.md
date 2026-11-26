@@ -1,5 +1,7 @@
 # A sequence, end to end
 
+[Documentation index](README.md) · To build and run this yourself: [Getting started](getting-started.md) · Related: [Running inside F Prime](fprime-integration.md)
+
 Everything else in this repository tests the library by calling it. This is the piece that shows what it is for: a command sequence that makes a decision from geometry onboard, built as one WebAssembly module and run inside NASA JPL's SpaceWasm interpreter with stand-ins for the F Prime WasmSequencer's host calls.
 
 ## What the sequence does
