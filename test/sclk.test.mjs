@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { load, prng, root } from './harness.mjs';
+import { readTimeTable, withTimeTable } from './time-table.mjs';
 
 const kernelDir = process.env.SPICE_LITE_KERNELS;
 const blobDir = resolve(root, 'test/blobs');
@@ -39,9 +40,9 @@ function encoded(sclk, partition, sec, usec) {
   return ticks >= 0 && ticks < p.len ? ticks + p.enc : null;
 }
 const split = (host) => { const u = Math.round(host * 1e6); return [Math.floor(u / 1e6), u % 1e6]; };
-const fwBytes = (base, sec, usec) => {
+const fwBytes = (base, sec, usec, context = 0) => {
   const b = new Uint8Array(11), v = new DataView(b.buffer);
-  v.setUint16(0, base); v.setUint32(3, sec); v.setUint32(7, usec);
+  v.setUint16(0, base); v.setUint8(2, context); v.setUint32(3, sec); v.setUint32(7, usec);
   return b;
 };
 
@@ -290,6 +291,156 @@ test('a reset clock: one base is refused, one base per partition works, and expl
   const api = await load(blob);
   assert.equal(api.host2et(2, 100, 500000).et, report.windowEt[0] + 5 + 100.5);
   assert.deepEqual(report.time.filter((t) => t.base === 2), [{ base: 2, hostStart: 0, etStart: report.windowEt[0] + 5, rate: 1 }]);
+});
+
+test('each derived piece carries the error measured for it, and holds it', { skip }, async () => {
+  await setup();
+  const tol = 1e-6;
+  const { blob, report } = await slice(configFor('drift', JUNE, [{ base: 3, sclk: -901, maxErrorSeconds: tol }]), kernelDir, blobDir);
+  const table = readTimeTable(blob), fit = report.timeFit[0];
+  assert.equal(table.length, fit.pieces);
+  // Stored as 32-bit floats rounded up, so never below what was measured.
+  table.forEach((t, i) => assert.ok(t.maxErr >= report.time[i].maxErr && t.maxErr <= report.time[i].maxErr * (1 + 2e-7) && t.maxErr > 0 && t.maxErr <= tol, `piece ${i}: ${t.maxErr}`));
+  assert.equal(Math.max(...report.time.map((t) => t.maxErr)), fit.maxErrSeconds, 'the worst piece is the fit\'s worst');
+  assert.ok(Math.min(...table.map((t) => t.maxErr)) < 0.5 * fit.maxErrSeconds, 'and the pieces differ, which one number for the table could not say');
+  // Every piece against CSPICE at readings of its own, to its own bound plus
+  // the spacing of 64-bit ET values in 2004 (0.03 microseconds).
+  const api = await load(blob), rnd = prng(905);
+  const last = Math.max(...fit.partitions.map((q) => q.hostLast));
+  let n = 0, tightest = 1;
+  for (let i = 0; i < table.length; i++) {
+    const from = Math.round(table[i].hostStart * 1e6), to = Math.round((i + 1 < table.length ? table[i + 1].hostStart : last) * 1e6);
+    for (let k = 0; k < 400; k++) {
+      const u = k === 0 ? from : from + Math.floor((to - from) * rnd());
+      const [sec, usec] = [Math.floor(u / 1e6), u % 1e6];
+      const enc = encoded(-901, 1, sec, usec) ?? encoded(-901, 2, sec, usec);
+      if (enc === null) continue; // a count between the partitions, which the clock never showed
+      const d = Math.abs(api.host2et(3, sec, usec).et - await spice.sct2e(-901, enc));
+      assert.ok(d <= table[i].maxErr + 3e-8, `piece ${i} is off by ${d} s at ${sec}.${usec}, bound ${table[i].maxErr} s`);
+      tightest = Math.min(tightest, table[i].maxErr - d); n++;
+    }
+  }
+  console.log(`  ${table.length} pieces with bounds from ${Math.min(...table.map((t) => t.maxErr)).toExponential(2)} to ${Math.max(...table.map((t) => t.maxErr)).toExponential(2)} s; ${n} readings, each within its own piece's bound`);
+  // An explicit piece may state a bound; one that states none stores zero.
+  const stated = await slice(configFor('stated', JUNE, [{ base: 2, hostStart: 0, rate: 1, maxErrorSeconds: 2.5e-4 }, { base: 5, hostStart: 0, rate: 1 }]), kernelDir, blobDir);
+  assert.deepEqual(readTimeTable(stated.blob).map((t) => t.maxErr), [Math.fround(2.5e-4) >= 2.5e-4 ? Math.fround(2.5e-4) : readTimeTable(stated.blob)[0].maxErr, 0]);
+  assert.ok(readTimeTable(stated.blob)[0].maxErr >= 2.5e-4 && readTimeTable(stated.blob)[0].maxErr < 2.5e-4 * (1 + 2e-7));
+});
+
+test('refuseGaps: counts the clock never showed, and readings past the window, are out of coverage', { skip }, async () => {
+  await setup();
+  const entry = { base: 3, sclk: -901, maxErrorSeconds: 1e-6 };
+  const open = await slice(configFor('drift', JUNE, [entry]), kernelDir, blobDir);
+  const shut = await slice(configFor('drift-gaps', JUNE, [{ ...entry, refuseGaps: true }]), kernelDir, blobDir);
+  const fit = shut.report.timeFit[0];
+  // Two gaps: after the first partition's last reading and after the window's.
+  assert.equal(fit.gaps, 2);
+  assert.equal(fit.pieces, open.report.timeFit[0].pieces, 'gaps are not counted as pieces');
+  const table = readTimeTable(shut.blob), gaps = table.filter((t) => t.gap);
+  assert.equal(table.length, fit.pieces + 2);
+  const ends = fit.partitions.map((q) => q.hostLast).sort((x, y) => x - y);
+  assert.deepEqual(gaps.map((g) => Math.round(g.hostStart * 1e6)), ends.map((h) => Math.round(h * 1e6) + 1), 'each gap starts one microsecond after a stretch ends');
+  // The header says gaps exist; without that bit the same table is refused,
+  // which is what a library from before gaps would do with the blob as cut.
+  assert.equal(new DataView(shut.blob.buffer, shut.blob.byteOffset).getUint32(16, true) & 8, 8);
+  assert.equal(new DataView(open.blob.buffer, open.blob.byteOffset).getUint32(16, true) & 8, 0);
+  assert.equal((await load(withTimeTable(shut.blob, table, { headerFlags: 1 }))).initStatus, 4, 'a gap entry the header does not announce');
+  const a = await load(open.blob), b = await load(shut.blob);
+  assert.equal(b.initStatus, 0);
+  // Inside the stretches both blobs give the same bits.
+  const rnd = prng(906);
+  let same = 0;
+  for (const q of fit.partitions) {
+    const [first, last] = [Math.round(q.hostFirst * 1e6), Math.round(q.hostLast * 1e6)];
+    for (const u of [first, last, ...Array.from({ length: 500 }, () => first + Math.floor((last - first) * rnd()))]) {
+      const x = a.host2et(3, Math.floor(u / 1e6), u % 1e6), y = b.host2et(3, Math.floor(u / 1e6), u % 1e6);
+      assert.equal(y.status, 0);
+      assert.equal(y.et, x.et);
+      same++;
+    }
+  }
+  // Between the partitions and past the window the open blob extends a line
+  // and the shut one declines, from the first microsecond on, in either form.
+  const [gapFrom, gapTo] = [Math.round(ends[0] * 1e6) + 1, Math.round(Math.min(...fit.partitions.map((q) => q.hostFirst).filter((h) => h > ends[0])) * 1e6) - 1];
+  const past = Math.round(ends[1] * 1e6) + 1;
+  let refused = 0;
+  for (const u of [gapFrom, gapTo, Math.floor((gapFrom + gapTo) / 2), past, past + 1, past + 86400e6, 4294967295e6 + 999999]) {
+    const [sec, usec] = [Math.floor(u / 1e6), u % 1e6];
+    assert.equal(a.host2et(3, sec, usec).status, 0, 'the open blob answers anyway');
+    assert.equal(b.host2et(3, sec, usec).status, 1, `${sec}.${usec} is refused`);
+    assert.equal(b.fwtime(fwBytes(3, sec, usec)).status, 1);
+    refused++;
+  }
+  assert.ok(gapTo - gapFrom > 1e6, 'the partitions are well apart');
+  console.log(`  ${fit.pieces} pieces and ${fit.gaps} gaps; ${same} readings inside the stretches unchanged to the bit, ${refused} outside them refused`);
+  // Unix time takes the option too: one gap, after the window.
+  const unix = await slice(configFor('unix-gaps', JUNE, [{ base: 2, unix: true, maxErrorSeconds: 1e-3, refuseGaps: true }]), kernelDir, blobDir);
+  const ut = readTimeTable(unix.blob);
+  assert.equal(ut.filter((t) => t.gap).length, 1);
+  assert.ok(ut[ut.length - 1].gap);
+  const c = await load(unix.blob), [gs, gu] = split(ut[ut.length - 1].hostStart);
+  assert.equal(c.host2et(2, gs, gu).status, 1);
+  assert.equal(c.host2et(2, gs - 1, gu).status, 0);
+  // An explicit gap: a base that stops answering at a stated reading.
+  const hand = await slice(configFor('hand-gap', JUNE, [{ base: 2, hostStart: 0, rate: 1 }, { base: 2, hostStart: 1000, gap: true }, { base: 2, hostStart: 2000, etOffset: 2000, rate: 1 }]), kernelDir, blobDir);
+  const d = await load(hand.blob);
+  assert.deepEqual([999, 1000, 1999, 2000].map((sec) => d.host2et(2, sec, 0).status), [0, 1, 1, 0]);
+});
+
+test('context: a reset clock under one time base, told apart by the context byte', { skip }, async () => {
+  await setup();
+  // The clock of -902 was reset, so its two partitions show the same counts.
+  // One base cannot tell them apart; two bases can; and so can one base with a
+  // context per partition, which F Prime carries in the byte after the base.
+  const time = [
+    { base: 3, context: 1, sclk: -902, partition: 1, maxErrorSeconds: 1e-6 },
+    { base: 3, context: 2, sclk: -902, partition: 2, maxErrorSeconds: 1e-6 },
+  ];
+  const { blob, report } = await slice(configFor('reset-context', JUNE, time), kernelDir, blobDir);
+  assert.equal(new DataView(blob.buffer, blob.byteOffset).getUint32(16, true) & 4, 4, 'the header says pieces are selected by context');
+  assert.deepEqual(report.timeFit.map((f) => [f.base, f.context, f.partitions.map((q) => q.partition)]), [[3, 1, [1]], [3, 2, [2]]]);
+  const table = readTimeTable(blob);
+  assert.deepEqual([...new Set(table.map((t) => t.context))], [1, 2]);
+  const api = await load(blob), rnd = prng(907);
+  assert.equal(api.initStatus, 0);
+  let n = 0, shared = 0;
+  for (const fit of report.timeFit) {
+    const q = fit.partitions[0], other = report.timeFit.find((f) => f !== fit).partitions[0];
+    const [first, last] = [Math.round(q.hostFirst * 1e6), Math.round(q.hostLast * 1e6)];
+    for (let k = 0; k < 1000; k++) {
+      const u = first + Math.floor((last - first) * rnd()), [sec, usec] = [Math.floor(u / 1e6), u % 1e6];
+      const want = await spice.sct2e(-902, encoded(-902, q.partition, sec, usec));
+      const got = api.fwtime(fwBytes(3, sec, usec, fit.context));
+      assert.equal(got.status, 0);
+      assert.ok(Math.abs(got.et - want) <= 1e-6, `partition ${q.partition}: off by ${Math.abs(got.et - want)} s`);
+      // The three-argument call takes the context above the time base.
+      assert.equal(api.host2et(3 + 65536 * fit.context, sec, usec).et, got.et);
+      // The same count in the other partition is another time altogether.
+      if (u >= Math.round(other.hostFirst * 1e6) && u <= Math.round(other.hostLast * 1e6)) {
+        const there = api.fwtime(fwBytes(3, sec, usec, 3 - fit.context));
+        assert.equal(there.status, 0);
+        assert.ok(Math.abs(there.et - got.et) > 1, 'the two partitions give different times for one count');
+        shared++;
+      }
+      n++;
+    }
+  }
+  assert.ok(shared > 0, 'some counts occur in both partitions');
+  // A context the blob has no pieces for, the bare base included, is out of
+  // coverage; bits above the context are ignored.
+  const [sec, usec] = split(report.timeFit[0].partitions[0].hostFirst + 10);
+  for (const context of [0, 3, 255]) assert.equal(api.fwtime(fwBytes(3, sec, usec, context)).status, 1, `context ${context}`);
+  assert.equal(api.host2et(3, sec, usec).status, 1);
+  assert.equal(api.host2et(3 + 65536 + 2 ** 24, sec, usec).et, api.host2et(3 + 65536, sec, usec).et);
+  console.log(`  ${table.length} pieces under base 3 in contexts 1 and 2; ${n} readings within a microsecond of CSPICE, ${shared} of them counts that both partitions show`);
+  // The same two partitions without contexts still collide and are refused.
+  await assert.rejects(slice(configFor('reset', JUNE, time.map(({ context, ...t }) => t)), kernelDir, blobDir), /two entries of time base 3 cover the same readings/);
+  // In a blob that does not select by context, the context byte of an F Prime
+  // time is ignored, as it always was.
+  const plain = await slice(configFor('drift', JUNE, [{ base: 3, sclk: -901, maxErrorSeconds: 1e-6 }]), kernelDir, blobDir);
+  const p = await load(plain.blob), [ps, pu] = split(plain.report.timeFit[0].partitions[0].hostFirst + 10);
+  for (const context of [1, 7, 255]) assert.equal(p.fwtime(fwBytes(3, ps, pu, context)).et, p.host2et(3, ps, pu).et);
+  assert.equal(p.host2et(3 + 65536 * 9, ps, pu).et, p.host2et(3, ps, pu).et);
 });
 
 test('the slicer fails clearly instead of missing its bound', { skip }, async () => {

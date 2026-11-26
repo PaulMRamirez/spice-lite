@@ -25,7 +25,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { load, runAll, prng, root } from './harness.mjs';
+import { load, runAll, prng, root, toHex } from './harness.mjs';
 
 const kernelDir = process.env.SPICE_LITE_KERNELS;
 const read = (name) => ({
@@ -715,6 +715,102 @@ test('Saturn hiding the Sun and the Earth from Cassini at orbit insertion', { sk
   console.log('    ' + lines.join('\n    '));
 });
 
+// Light time. lite_occulted_corr with LITE_LT is held to CSPICE's occult_c with
+// "LT" the way the geometric call is held to it with "NONE": the same codes on
+// a grid, and the same start and end of every event, found by bisection.
+test('light time: lite_occulted_corr against occult_c with LT, on the eclipses and at Saturn', { skip }, async () => {
+  await setup();
+  const truthLt = async (spice, target, by, obsName, et) => {
+    const [n1, f1] = NAMES[target], [n2, f2] = NAMES[by];
+    const c = await spice.occult(n1, 'ELLIPSOID', f1, n2, 'ELLIPSOID', f2, 'LT', obsName, et);
+    return c < 0 ? -c : 0;
+  };
+  const cases = [
+    // target, by, observer, blob, CSPICE, from, to, step, what the shift should be at least (s)
+    { name: 'the Earth hiding the Sun from the Moon (the lunar eclipse of 28 October)', q: [10, 399, 301], set: ecl, spice: spiceEcl, from: '2004-10-27T20:00:00', to: '2004-10-28T10:00:00', step: 60, shift: 35 },
+    { name: 'the Earth hiding the Moon from the Sun', q: [301, 399, 10], set: ecl, spice: spiceEcl, from: '2004-10-27T20:00:00', to: '2004-10-28T10:00:00', step: 60, shift: 500 },
+    { name: 'the Moon hiding the Earth from the Sun (the solar eclipse of 14 October)', q: [399, 301, 10], set: ecl, spice: spiceEcl, from: '2004-10-13T20:00:00', to: '2004-10-14T10:00:00', step: 60, shift: 500 },
+    { name: 'Saturn hiding the Sun from Cassini', q: [10, 699, -82], set: soi, spice: spiceSoi, from: '2004-07-01T02:30:00', to: '2004-07-01T05:00:00', step: 15, shift: 0.2 },
+    { name: 'Saturn hiding the Earth from Cassini', q: [399, 699, -82], set: soi, spice: spiceSoi, from: '2004-07-01T02:30:00', to: '2004-07-01T05:00:00', step: 15, shift: 0.5 },
+  ];
+  for (const c of cases) {
+    const api = await load(c.set.blob);
+    const [target, by, observer] = c.q, obsName = String(observer);
+    const t0 = await c.spice.str2et(c.from), t1 = await c.spice.str2et(c.to);
+    const lite = (corr) => (et) => { const r = api.occultedCorr(target, by, observer, et, corr); assert.equal(r.status, 0); return r.code; };
+    const want = (et) => truthLt(c.spice, target, by, obsName, et);
+    // Every change of code on the grid, refined to a quarter of a microsecond or better.
+    const changes = async (code) => {
+      const out = [];
+      let prev = await code(t0);
+      for (let et = t0 + c.step; et <= t1; et += c.step) {
+        const now = await code(et);
+        if (now !== prev) {
+          let lo = et - c.step, hi = et;
+          for (let i = 0; i < 28; i++) { const mid = 0.5 * (lo + hi); if ((await code(mid)) === prev) lo = mid; else hi = mid; }
+          out.push({ at: hi, from: prev, to: now });
+        }
+        prev = now;
+      }
+      return out;
+    };
+    const none = await changes(lite(0)), lt = await changes(lite(1)), spice = await changes(want);
+    assert.ok(spice.length >= 2, `${c.name}: an event inside the span`);
+    assert.deepEqual(lt.map((e) => [e.from, e.to]), spice.map((e) => [e.from, e.to]), `${c.name}: the same sequence of codes as CSPICE`);
+    assert.deepEqual(none.map((e) => [e.from, e.to]), spice.map((e) => [e.from, e.to]));
+    // The times agree with CSPICE's as closely as the geometric ones do: the
+    // blob's declared errors over the speed of the limb, which for the Sun,
+    // Earth, and Moon is far under a millisecond, and for Cassini the bound of
+    // the geometric test above.
+    const bounds = boundsOf(c.set), radii = (id) => radiiIn(c.set.blob, id);
+    const err = allowance(bounds, radii, observer);
+    let bound = 1e-3;
+    if (observer === -82) {
+      const v = await c.spice.spkezr('-82', spice[0].at, 'J2000', 'NONE', 'SATURN');
+      bound = (10 * (err(699) + err(target))) / norm(vec(v.velocity)) + 2 * (c.step / 2 ** 28);
+    }
+    const off = lt.map((e, i) => e.at - spice[i].at);
+    off.forEach((d, i) => assert.ok(Math.abs(d) <= bound, `${c.name}: change ${i} differs from CSPICE's by ${d} s, allowed ${bound}`));
+    // And light time matters: it moves every change by at least this much.
+    const moved = lt.map((e, i) => e.at - none[i].at);
+    moved.forEach((d) => assert.ok(Math.abs(d) >= c.shift, `${c.name}: light time moved a change by only ${d} s`));
+    // On the grid the corrected codes are CSPICE's, away from the changes.
+    let n = 0;
+    for (let et = t0; et <= t1; et += c.step * 7) {
+      if (spice.some((e) => Math.abs(e.at - et) < 2 * bound + 1e-6)) continue;
+      assert.equal(lite(1)(et), await want(et), `${c.name} at ${et}`);
+      n++;
+    }
+    console.log(`  ${c.name}: ${spice.length} changes of code; light time moves them by ${moved.map((d) => d.toFixed(d > -10 && d < 10 ? 2 : 0)).join(', ')} s; the library's come ${off.map((d) => (d * 1e6).toFixed(1)).join(', ')} microseconds after CSPICE's; ${n} grid times agree`);
+  }
+  // With LITE_NONE the call is lite_occulted_shapes.
+  const api = await load(ecl.blob), t = await spiceEcl.str2et('2004-10-28T03:00:00');
+  for (const dt of [-40000, -9000, 0, 5000, 9000]) {
+    assert.deepEqual(api.occultedCorr(10, 399, 301, t + dt, 0), api.occultedShapes(10, 399, 301, t + dt));
+  }
+  // What cannot be served. Stellar aberration is not offered; a correction
+  // that does not exist is a bad argument; light time needs the segments to
+  // reach back by it, and a blob rooted at the solar system barycenter.
+  const [w0] = ecl.report.windowEt;
+  assert.equal(api.occultedCorr(10, 399, 301, t, 2).status, 5);
+  assert.equal(api.occultedCorr(10, 399, 301, t, 3).status, 6);
+  assert.equal(api.occultedCorr(10, 399, 301, t, -1).status, 6);
+  assert.equal(api.occultedCorr(10, 399, 301, w0 + 100, 0).status, 0);
+  assert.equal(api.occultedCorr(10, 399, 301, w0 + 100, 1).status, 1, 'the Sun is 499 s away and the blob starts 100 s back');
+  assert.equal(api.occultedCorr(10, 399, 301, w0 + 600, 1).status, 0);
+  const rooted = await load(new Uint8Array(readFileSync(resolve(root, 'test/blobs/orbiter.slb'))));
+  const tw = JSON.parse(readFileSync(resolve(root, 'test/blobs/orbiter.report.json'), 'utf8')).windowEt[0] + 5000;
+  assert.equal(rooted.occultedCorr(301, 399, -9003, tw, 0).status, 0, 'a tree rooted at the Earth-Moon barycenter answers geometrically');
+  assert.equal(rooted.occultedCorr(301, 399, -9003, tw, 1).status, 5, 'and cannot apply light time');
+  // The native build gives the same lines.
+  if (existsSync(resolve(root, 'build/driver'))) {
+    const lines = [];
+    for (let dt = -9000; dt <= 9000; dt += 250) for (const corr of [0, 1, 2]) lines.push(`occcorr 10 399 301 ${toHex(t + dt)} ${corr}`);
+    const text = lines.join('\n') + '\n';
+    assert.equal(execFileSync(resolve(root, 'build/driver'), ['run', resolve(root, 'test/blobs/eclipses.slb')], { input: text, encoding: 'utf8' }), runAll(api, text));
+  }
+});
+
 // No kernels: the library against the brute-force model, each using the blob's
 // own positions and orientations, for random shapes of the stand-in body in
 // front of the Sun (round) and behind and in front of the Earth (oblate).
@@ -759,6 +855,68 @@ test('random triaxial shapes: the library and the brute-force model agree away f
   }
   console.log(`  ${n} cases over 120 shapes (model: ${counts[0]} none, ${counts[1]} partial, ${counts[2]} annular, ${counts[3]} full); ${n - near} agree, ${near} within a billionth of a change of code`);
   assert.ok(counts.every((c) => c > 0));
+});
+
+// Which body is in front. The library decides it with a plane between the two
+// bodies (occ_front); earlier drafts compared tangent lengths, which is exact
+// for spheres and wrong for some pairs of elongated bodies. The truth here is
+// lines of sight: every one that meets both bodies must meet the same one
+// first, and that one is in front. No kernels: the Earth and the stand-in body
+// are given shapes with axis ratios up to five and sizes that leave them a
+// fraction of a radius apart, on the blob's own positions and orientations.
+test('which body is in front: lines of sight decide, for elongated bodies close together', async () => {
+  const { apart, reach, frontByPlane, toUnit, fromUnit, LIMIT } = await import('../tools/front-rule-study.mjs');
+  const rnd = prng(777);
+  const t = ecl.report.windowEt[0] + 5000;
+  const base = await load(ecl.blob);
+  const centers = { [STANDIN]: base.state(STANDIN, 0, t, 0).state.slice(0, 3), 399: base.state(399, 0, t, 0).state.slice(0, 3) };
+  const rots = { [STANDIN]: base.orient(STANDIN, t).rot, 399: base.orient(399, t).rot };
+  const span = norm(sub(centers[STANDIN], centers[399]));
+  const unitVec = () => { for (;;) { const v = [2 * rnd() - 1, 2 * rnd() - 1, 2 * rnd() - 1], m = norm(v); if (m > 0.05 && m <= 1) return v.map((x) => x / m); } };
+  let n = 0, hidden = 0, oldWrong = 0, fellBack = 0, pairs = 0;
+  while (pairs < 60) {
+    // Two shapes that together span most of the distance between the centers.
+    const shape = (size) => [1, 2, 3].map(() => size * 5 ** -rnd());
+    const share = 0.25 + 0.5 * rnd(), fill = 0.9 + 0.9 * rnd();
+    const radii = { [STANDIN]: shape(span * share * fill), 399: shape(span * (1 - share) * fill) };
+    const E = (id) => ({ r: radii[id], rot: rots[id] });
+    if (!apart(E(STANDIN), centers[STANDIN], E(399), centers[399])) continue;
+    pairs++;
+    const api = await load(withRadii(withRadii(ecl.blob, STANDIN, radii[STANDIN]), 399, radii[399]), { skipCrc: true });
+    for (const [front, back] of [[STANDIN, 399], [399, STANDIN]]) {
+      const F = E(front), T = E(back);
+      for (let look = 0; look < 30; look++) {
+        const mid = centers[front].map((v, k) => 0.5 * (v + centers[back][k]));
+        const o = unitVec().map((v, k) => mid[k] + v * span * 10 ** (-0.3 + 1.5 * rnd()));
+        const f = sub(centers[front], o), b = sub(centers[back], o);
+        const c = toUnit(F, f), bt = toUnit(T, b), tt = toUnit(F, b);
+        if (!(dot(c, c) > 1.001) || !(dot(bt, bt) > 1.001)) continue; // inside or on a body
+        // Lines of sight into the front body that also meet the target.
+        let frontFirst = 0, backFirst = 0;
+        for (let i = 0; i < 800; i++) {
+          const w = unitVec(), s = Math.cbrt(rnd()), d = fromUnit(F, c.map((v, k) => v + s * w[k]));
+          const sf = reach(F, f, d), st = reach(T, b, d);
+          if (sf === null || st === null) continue;
+          if (sf < st) frontFirst++; else backFirst++;
+        }
+        if (frontFirst + backFirst < 8) continue; // too little overlap for the sample to speak
+        assert.ok(frontFirst === 0 || backFirst === 0, 'the lines of sight agree with one another');
+        assert.equal(api.setState(SC, 0, t, [...o, 0, 0, 0], 30), 0);
+        const got = api.occulted(back, front, SC, t);
+        assert.equal(got.status, 0);
+        assert.equal(got.code !== 0, frontFirst > 0, `radii ${radii[front]} in front of ${radii[back]}: lines of sight meet the ${frontFirst ? 'front' : 'back'} body first, the library says ${got.code}`);
+        n++;
+        if (frontFirst) hidden++;
+        // What the tangent rule of earlier drafts would have said, and whether
+        // the library had to fall back on it.
+        if ((dot(c, c) - 1 < dot(tt, tt) * (1 - 1 / dot(bt, bt))) !== (frontFirst > 0)) oldWrong++;
+        if (frontByPlane(f, b, F, T, LIMIT).front < 0) fellBack++;
+      }
+    }
+  }
+  console.log(`  ${n} views of ${pairs} pairs in which lines of sight meet both bodies: the library names the nearer one in all (${hidden} occultations, ${n - hidden} with the other body in front); the tangent rule would have named the wrong one in ${oldWrong}; ${fellBack} were left to it`);
+  assert.ok(n > 500 && hidden > 100 && n - hidden > 100);
+  assert.ok(oldWrong >= 5, 'the cases include ones the tangent rule gets wrong');
 });
 
 test('occultation requests that cannot be served get status codes', async () => {

@@ -66,6 +66,7 @@ static struct {
     const uint8_t *b;
     uint32_t len;
     uint32_t flags;
+    uint32_t tmask; /* bits of a TIME entry's first word that select a piece */
     int ready;
     int root;
     section sec[SEC_MAX + 1];
@@ -479,6 +480,49 @@ static uint32_t crc32(const uint8_t *p, uint32_t n)
 #error "LITE_CRC_TABLES must be 0, 1, or 4"
 #endif
 
+/* ---- Fletcher-32 --------------------------------------------------------
+ *
+ * The other checksum a blob may carry (header flag bit 4): Fletcher's, over
+ * 16-bit little-endian words, two sums modulo 65535 that start at zero, the
+ * second in the high half of the result. An odd last byte counts as a word
+ * with a zero high byte. It needs no table and a few operations per word
+ * where the CRC needs a table lookup per byte, and it detects less: see
+ * SPEC.md, "Integrity".
+ *
+ * The sums are kept in 32 bits and reduced every 356 words: starting from
+ * sums below 65535, as many as 360 words of 65535 leave the second sum under
+ * 2^32, and 356 leaves a margin. The tail is added after a reduction. Words
+ * are taken two at a time from one 32-bit load, which assumes a little-endian
+ * host, as the rest of this file does. */
+static uint32_t fletcher32(const uint8_t *p, uint32_t n)
+{
+    uint32_t a = 0, b = 0;
+    uint32_t i = 0, full = n & ~3u;
+    while (i < full) {
+        uint32_t stop = full - i > 712u ? i + 712u : full;
+        for (; i < stop; i += 4u) {
+            uint32_t w;
+            __builtin_memcpy(&w, p + i, 4);
+            a += w & 0xFFFFu;
+            b += a;
+            a += w >> 16;
+            b += a;
+        }
+        a %= 65535u;
+        b %= 65535u;
+    }
+    if (i + 2u <= n) {
+        a += rd16(p + i);
+        b += a;
+        i += 2u;
+    }
+    if (i < n) {
+        a += p[i];
+        b += a;
+    }
+    return ((b % 65535u) << 16) | (a % 65535u);
+}
+
 /* ---- section accessors -------------------------------------------------- */
 
 static const uint8_t *body_at(int i) { return G.b + G.sec[SEC_BODY].off + (uint32_t)i * BODY_ENTRY; }
@@ -552,7 +596,7 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
             return 0;
         }
     }
-    if ((rd32(b + 16) & ~3u) != 0u && rd16(b + 6) <= 1u) {
+    if ((rd32(b + 16) & ~31u) != 0u && rd16(b + 6) <= 1u) {
         return 0; /* unknown flag bits in a minor version this reader knows */
     }
     nsec = rd16(b + 20);
@@ -689,21 +733,30 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
             return 0;
         }
     }
-    /* TIME: finite numbers, and entries in strictly ascending order of time
-     * base, then host_start, which is what lets lite_host2et search. Two
-     * pieces of one base with the same start are refused with the rest. The
-     * count is capped so that the search has a fixed worst case. */
+    /* TIME: finite numbers, and entries in strictly ascending order of their
+     * key, then host_start, which is what lets lite_host2et search. The key
+     * is the time base, or, in a blob whose header says pieces are selected
+     * by context too (flag bit 2), the context and the time base as one
+     * 24-bit number. Two pieces of one key with the same start are refused
+     * with the rest. The count is capped so that the search has a fixed worst
+     * case. An entry marked as a gap needs the header to say gaps exist (flag
+     * bit 3), so that a reader from before them refuses the blob; an entry's
+     * error is a number that is not negative. */
     if (G.sec[SEC_TIME].count > TIME_MAX) {
         return 0;
     }
+    G.tmask = (rd32(b + 16) & 4u) != 0u ? 0xffffffu : 0xffffu;
     for (i = 0; i < G.sec[SEC_TIME].count; i++) {
         const uint8_t *e = b + G.sec[SEC_TIME].off + i * TIME_ENTRY;
         if (!finite64(rdf64(e + 8)) || !finite64(rdf64(e + 16)) || !finite64(rdf64(e + 24))) {
             return 0;
         }
+        if (((e[3] & 1u) != 0u && (rd32(b + 16) & 8u) == 0u) || !(rdf32(e + 4) >= 0.0)) {
+            return 0;
+        }
         if (i > 0u) {
-            uint32_t base = rd16(e), prev = rd16(e - TIME_ENTRY);
-            if (base < prev || (base == prev && !(rdf64(e + 8) > rdf64(e - TIME_ENTRY + 8)))) {
+            uint32_t key = rd32(e) & G.tmask, prev = rd32(e - TIME_ENTRY) & G.tmask;
+            if (key < prev || (key == prev && !(rdf64(e + 8) > rdf64(e - TIME_ENTRY + 8)))) {
                 return 0;
             }
         }
@@ -718,7 +771,10 @@ static int validate(const uint8_t *b, uint32_t len, uint32_t flags)
         }
     }
     if ((flags & LITE_INIT_SKIP_CRC) == 0u) {
-        if (crc32(b + 16, total - 16u) != rd32(b + 12)) {
+        /* header flag bit 4 says which checksum the field holds */
+        uint32_t sum = (rd32(b + 16) & 16u) != 0u ? fletcher32(b + 16, total - 16u)
+                                                  : crc32(b + 16, total - 16u);
+        if (sum != rd32(b + 12)) {
             return 0;
         }
     }
@@ -744,7 +800,7 @@ int lite_init(const void *blob, uint32_t len, uint32_t flags)
 
 int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double *et)
 {
-    uint32_t base;
+    uint32_t key;
     double host;
     const uint8_t *lo, *hi, *tab;
     if (!G.ready) {
@@ -754,13 +810,14 @@ int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double
         return LITE_BAD_ARG;
     }
     host = (double)seconds + (double)useconds * 1.0e-6;
-    base = (uint16_t)time_base;
-    /* lite_init has checked that the entries ascend by time base, then by
+    key = time_base & G.tmask;
+    /* lite_init has checked that the entries ascend by key (the time base,
+     * with the context above it where the blob selects by context), then by
      * host_start, with no two alike, so the entries that sort at or before
-     * (base, host) are a prefix of the table. The binary search below finds
+     * (key, host) are a prefix of the table. The binary search below finds
      * where that prefix ends, at lo; the entry just before lo is the piece of
-     * this base with the latest host_start not after the reading, if the
-     * prefix is not empty and its last entry has this base. That is the same
+     * this key with the latest host_start not after the reading, if the
+     * prefix is not empty and its last entry has this key. That is the same
      * piece a scan of every entry selects. A blob is at most 1 MiB, so the
      * table has fewer than 2^15 entries and the search takes at most 15
      * probes. The written form (pointers, the base tested for equality
@@ -770,14 +827,16 @@ int lite_host2et(uint32_t time_base, uint32_t seconds, uint32_t useconds, double
     hi = tab + G.sec[SEC_TIME].count * TIME_ENTRY;
     while (lo < hi) {
         const uint8_t *mid = lo + (((uint32_t)(hi - lo) >> 1) & ~(TIME_ENTRY - 1u));
-        uint32_t b = rd16(mid);
-        if (b == base ? rdf64(mid + 8) <= host : b < base) {
+        uint32_t k = rd32(mid) & G.tmask;
+        if (k == key ? rdf64(mid + 8) <= host : k < key) {
             lo = mid + TIME_ENTRY;
         } else {
             hi = mid;
         }
     }
-    if (lo == tab || rd16(lo - TIME_ENTRY) != base) {
+    /* No piece of this key at or before the reading, or the piece is a gap:
+     * a stretch of readings the blob declines to convert. */
+    if (lo == tab || (rd32(lo - TIME_ENTRY) & G.tmask) != key || (lo[3 - (int)TIME_ENTRY] & 1u) != 0u) {
         return LITE_OUT_OF_COVERAGE;
     }
     *et = rdf64(lo - 16) + rdf64(lo - 8) * (host - rdf64(lo - 24));
@@ -790,7 +849,9 @@ int lite_fwtime2et(const uint8_t *bytes, uint32_t len, double *et)
     if (bytes == 0 || len != 11u) {
         return G.ready ? LITE_BAD_ARG : LITE_BAD_BLOB;
     }
-    base = ((uint32_t)bytes[0] << 8) | bytes[1];
+    /* The context rides above the time base, where lite_host2et looks for it
+     * in a blob that selects by context and ignores it in one that does not. */
+    base = ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[0] << 8) | bytes[1];
     sec = ((uint32_t)bytes[3] << 24) | ((uint32_t)bytes[4] << 16) | ((uint32_t)bytes[5] << 8) | bytes[6];
     usec = ((uint32_t)bytes[7] << 24) | ((uint32_t)bytes[8] << 16) | ((uint32_t)bytes[9] << 8) | bytes[10];
     return lite_host2et(base, sec, usec, et);
@@ -1747,6 +1808,7 @@ int lite_sub_point(int32_t body, int32_t observer, double et, double *lon, doubl
 
 #define OCC_MEMO 8
 #define OCC_GOLDEN_MAX 30
+#define OCC_FRONT_MAX 16
 
 /* Two hints for clang, which builds the flight module. LITE_SMALL compiles for
  * size two parts that do little arithmetic (measured: it must stay off
@@ -2021,6 +2083,85 @@ LITE_SMALL static int occ_spheres(const double *b, double rb, const double *f, d
     return LITE_OK;
 }
 
+/* Which of two ellipsoids is in front, exactly, where a plane can be found
+ * with one on each side of it. Two convex bodies that do not intersect have
+ * such a plane, and every line of sight that meets both bodies meets first
+ * the one on the observer's side of it, so the plane settles the question
+ * for every such line at once.
+ *
+ * n is the plane's normal, pointing from the front body toward the target.
+ * The point of an ellipsoid farthest along a direction has a closed form (in
+ * the body's frame it is the direction scaled by the squared semi-axes and
+ * brought to the surface), so pf, the front body's farthest point along n,
+ * and pt, the target's farthest point against n, cost a few dozen operations
+ * each; a plane with normal n separates the bodies exactly when n.(pt - pf)
+ * is positive. The search starts from the line of centers, which is the
+ * answer for two spheres. While that fails, n and pt - pf are both
+ * differences of a point of the target and a point of the front body, as is
+ * every point between them, and n moves to the shortest of those (the step of
+ * Gilbert's method for the distance between convex sets), which brings it
+ * toward the line between the bodies' nearest points.
+ *
+ * With the observer at the origin and a separating n in hand: if the target
+ * reaches to or behind the observer's level along n (n.pt <= 0) the observer
+ * is on the target's side; if the front body lies wholly behind that level
+ * (n.pf < 0) the observer is between the two and no line of sight meets both;
+ * otherwise the front body is in front.
+ *
+ * Returns 1 when `by` is in front, 0 when it is not (no occultation), and -1
+ * when no plane was found in OCC_FRONT_MAX tries: the bodies intersect, or
+ * all but touch. tools/front-rule-study.mjs has the same steps and the
+ * measurements: one try for spheres and for bodies as flattened as planets,
+ * and a plane found within the limit down to a gap of a tenth of the smaller
+ * body's radius between ellipsoids with axis ratios of five. */
+static int occ_front(const double *b, const double *rt, const double *rott, const double *f,
+                     const double *rf, const double *rotf)
+{
+    double n[3], it[3], iv[3], v[3], pf[3], pt[3], d[3], h, lam, ee;
+    int i, tries;
+    for (i = 0; i < 3; i++) {
+        it[i] = 1.0 / rt[i];
+        iv[i] = 1.0 / rf[i];
+        n[i] = b[i] - f[i];
+    }
+    for (tries = 0; tries < OCC_FRONT_MAX; tries++) {
+        to_unit(iv, rotf, n, v); /* n in the front body's frame, times its semi-axes */
+        h = norm3(v);
+        from_unit(rf, rotf, v, pf);
+        to_unit(it, rott, n, v);
+        lam = norm3(v);
+        from_unit(rt, rott, v, pt);
+        if (!(h > 0.0) || !(lam > 0.0)) {
+            return -1;
+        }
+        for (i = 0; i < 3; i++) {
+            pf[i] = f[i] + pf[i] / h;
+            pt[i] = b[i] - pt[i] / lam;
+            d[i] = pt[i] - pf[i];
+        }
+        h = dot3(n, d);
+        if (!finite64(h)) {
+            return -1;
+        }
+        if (h > 0.0) {
+            return dot3(n, pt) > 0.0 && dot3(n, pf) >= 0.0;
+        }
+        /* the shortest point between n and d */
+        ee = 0.0;
+        lam = 0.0;
+        for (i = 0; i < 3; i++) {
+            v[i] = n[i] - d[i];
+            ee += v[i] * v[i];
+            lam += n[i] * v[i];
+        }
+        lam = lam < ee ? lam / ee : 1.0;
+        for (i = 0; i < 3; i++) {
+            n[i] -= lam * v[i];
+        }
+    }
+    return -1;
+}
+
 /* Occultation of two ellipsoids: the target with semi-axes rt and rotation
  * rott at b, the front body with rf and rotf at f, both relative to the
  * observer in J2000. A null rotation means a sphere (equal semi-axes).
@@ -2054,13 +2195,17 @@ static int occ_ellipsoids(const double *b, const double *rt, const double *rott,
     }
     tf2 = n2 - 1.0; /* squared tangent length to the front body, in its unit-sphere space */
     *code = LITE_OCC_NONE;
-    /* Which body is nearer: the one with the shorter tangent from the
-     * observer, as for two spheres. Both lengths are taken in the front
-     * body's unit-sphere space, the target's along the line to its center
-     * (tt is that line's squared length there, and 1 - 1/m2 the share of it
-     * that reaches the target's limb). For two spheres this is the test in
-     * occ_spheres exactly. */
-    if (!(tf2 < tt * (1.0 - 1.0 / m2))) {
+    /* Which body is nearer. occ_front says, exactly, wherever it finds a
+     * plane between the two. Where it does not (bodies that intersect or all
+     * but touch), the rule of earlier drafts stands in: the nearer body is the
+     * one with the shorter tangent from the observer, as for two spheres, both
+     * lengths taken in the front body's unit-sphere space and the target's
+     * along the line to its center (tt is that line's squared length there,
+     * and 1 - 1/m2 the share of it that reaches the target's limb). For two
+     * spheres that is the test in occ_spheres exactly; for bodies that are far
+     * from round it can name the wrong one. */
+    i = occ_front(b, rt, rott, f, rf, rotf);
+    if (i == 0 || (i < 0 && !(tf2 < tt * (1.0 - 1.0 / m2)))) {
         return LITE_OK;
     }
     /* e: the vector toward the front body's center, scaled to the tangent
@@ -2161,10 +2306,42 @@ static int occ_ellipsoids(const double *b, const double *rt, const double *rott,
     return LITE_OK;
 }
 
-LITE_SMALL int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer, double et,
-                                    int32_t *code, int32_t *target_shape, int32_t *by_shape)
+/* The position of body idx as the observer at o (relative to the root, at et)
+ * sees it under a one-iteration light-time correction, as lite_state's
+ * LITE_LT has it: the body at et less the geometric light time. epoch
+ * receives et less the light time of that retarded position, which is when
+ * the light now arriving left the body and so the time for its orientation.
+ * The memo is cleared, because its links were evaluated at another time. */
+static int occ_retarded(link_memo *m, int idx, const double *o, double et, double *p, double *epoch)
+{
+    double g[3];
+    int st, k;
+    st = pos_rel(m, idx, G.root, et, g);
+    if (st != LITE_OK) {
+        return st;
+    }
+    for (k = 0; k < 3; k++) {
+        g[k] -= o[k];
+    }
+    m->n = 0;
+    st = pos_rel(m, idx, G.root, et - norm3(g) / CLIGHT, p);
+    m->n = 0;
+    if (st != LITE_OK) {
+        return st;
+    }
+    for (k = 0; k < 3; k++) {
+        p[k] -= o[k];
+    }
+    *epoch = et - norm3(p) / CLIGHT;
+    return LITE_OK;
+}
+
+LITE_SMALL int lite_occulted_corr(int32_t target, int32_t by, int32_t observer, double et,
+                                  int32_t corr, int32_t *code, int32_t *target_shape,
+                                  int32_t *by_shape)
 {
     double rt[3], rf[3], b[3], f[3], rott[9], rotf[9];
+    double ett = et, etf = et; /* when each body is seen: et, or et less its light time */
     const double *pt = 0, *pf = 0;
     link_memo memo;
     int ti, fi, oi, st;
@@ -2174,8 +2351,13 @@ LITE_SMALL int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer
     if (!G.ready) {
         return LITE_BAD_BLOB;
     }
-    if (code == 0 || !finite64(et)) {
+    if (code == 0 || !finite64(et) || corr < LITE_NONE || corr > LITE_LT_S) {
         return LITE_BAD_ARG;
+    }
+    /* Light time needs inertial positions, as in lite_state. Stellar
+     * aberration is not offered: SPICE's occult_c has none either. */
+    if (corr == LITE_LT_S || (corr == LITE_LT && ((G.flags & 1u) == 0u || body_naif(G.root) != 0))) {
+        return LITE_UNSUPPORTED;
     }
     ti = body_index(target);
     fi = body_index(by);
@@ -2190,13 +2372,34 @@ LITE_SMALL int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer
         return LITE_UNSUPPORTED;
     }
     memo.n = 0;
-    st = pos_rel(&memo, ti, oi, et, b);
-    if (st != LITE_OK) {
-        return st;
-    }
-    st = pos_rel(&memo, fi, oi, et, f);
-    if (st != LITE_OK) {
-        return st;
+    if (corr == LITE_NONE) {
+        st = pos_rel(&memo, ti, oi, et, b);
+        if (st != LITE_OK) {
+            return st;
+        }
+        st = pos_rel(&memo, fi, oi, et, f);
+        if (st != LITE_OK) {
+            return st;
+        }
+    } else {
+        /* Each body where the observer sees it: its own light time back. The
+         * geometric position of the second body reuses the links the first
+         * one's left in the memo only through the observer, whose position is
+         * taken once. */
+        double o[3];
+        st = pos_rel(&memo, oi, G.root, et, o);
+        if (st != LITE_OK) {
+            return st;
+        }
+        memo.n = 0;
+        st = occ_retarded(&memo, ti, o, et, b, &ett);
+        if (st != LITE_OK) {
+            return st;
+        }
+        st = occ_retarded(&memo, fi, o, et, f, &etf);
+        if (st != LITE_OK) {
+            return st;
+        }
     }
     if (!(rt[0] == rt[1] && rt[1] == rt[2] && rf[0] == rf[1] && rf[1] == rf[2])) {
         /* At least one body is not round. First the cheap way out: when the
@@ -2215,14 +2418,14 @@ LITE_SMALL int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer
         int far = qb > 0.0 && qf > 0.0 && dot3(f, b) <= lite_sqrt(qb) * lite_sqrt(qf) - rtx * rfx;
         if (!(rt[0] == rt[1] && rt[1] == rt[2])) {
             ts = far ? LITE_SHAPE_BOUND : LITE_SHAPE_STANDIN;
-            if (!far && lite_orient(target, et, rott) == LITE_OK) {
+            if (!far && lite_orient(target, ett, rott) == LITE_OK) {
                 pt = rott;
                 ts = LITE_SHAPE_ELLIPSOID;
             }
         }
         if (!(rf[0] == rf[1] && rf[1] == rf[2])) {
             fs = far ? LITE_SHAPE_BOUND : LITE_SHAPE_STANDIN;
-            if (!far && lite_orient(by, et, rotf) == LITE_OK) {
+            if (!far && lite_orient(by, etf, rotf) == LITE_OK) {
                 pf = rotf;
                 fs = LITE_SHAPE_ELLIPSOID;
             }
@@ -2258,7 +2461,13 @@ done:
     return st;
 }
 
+int lite_occulted_shapes(int32_t target, int32_t by, int32_t observer, double et, int32_t *code,
+                         int32_t *target_shape, int32_t *by_shape)
+{
+    return lite_occulted_corr(target, by, observer, et, LITE_NONE, code, target_shape, by_shape);
+}
+
 int lite_occulted(int32_t target, int32_t by, int32_t observer, double et, int32_t *code)
 {
-    return lite_occulted_shapes(target, by, observer, et, code, 0, 0);
+    return lite_occulted_corr(target, by, observer, et, LITE_NONE, code, 0, 0);
 }

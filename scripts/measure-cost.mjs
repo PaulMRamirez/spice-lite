@@ -107,6 +107,24 @@ for (const tables of [0, 1, 4]) {
   const crcOnly = m.rows[0].instructions - m.rows[1].instructions;
   crcRows.push({ tables, tableBytes: tables === 0 ? 64 : tables * 1024, moduleBytes: m.load.module_bytes, instructions: m.rows[0].instructions, perByte: crcOnly / (small.length - 16), slices: m.rows[0].slices });
 }
+// 3b. The two checksums a blob may carry, in the default build: the committed
+// blobs as they are (CRC-32) and with the checksum rewritten as Fletcher-32
+// (header flag bit 4), which changes five bytes and no answer.
+const { setChecksum } = await import('../tools/slicer.mjs');
+const sumRows = [];
+for (const [label, wasm, path] of [['13 KB', shipped, smallPath], ['90 KB', benchWasm, blobPath]]) {
+  const bytes = readFileSync(path);
+  const flPath = resolve(root, `build/cost.fletcher.${label.replace(' ', '')}.slb`);
+  writeFileSync(flPath, setChecksum(new Uint8Array(bytes), 'fletcher32'));
+  const init = [['init 0', 'init', null], ['init 1', 'skip', null]];
+  const crc = await measure(wasm, path, init, `sum-crc-${label.replace(' ', '')}`);
+  const fl = await measure(wasm, flPath, init, `sum-fletcher-${label.replace(' ', '')}`);
+  const per = (m) => (m.rows[0].instructions - m.rows[1].instructions) / (bytes.length - 16);
+  sumRows.push({ label, bytes: bytes.length, crc: crc.rows[0].instructions, fletcher: fl.rows[0].instructions, crcPerByte: per(crc), fletcherPerByte: per(fl), skipped: crc.rows[1].instructions });
+}
+const sumTable = ['| Blob | Bytes | lite_init, CRC-32 | Per byte | Slices | lite_init, Fletcher-32 | Per byte | Slices | lite_init, checksum skipped |', '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+  ...sumRows.map((r) => `| ${r.label} | ${fmt(r.bytes)} | ${fmt(r.crc)} | ${r.crcPerByte.toFixed(1)} | ${fmt(Math.ceil(r.crc / 1000))} | ${fmt(r.fletcher)} | ${r.fletcherPerByte.toFixed(1)} | ${fmt(Math.ceil(r.fletcher / 1000))} | ${fmt(r.skipped)} |`)].join('\n');
+
 const crcTable = ['| LITE_CRC_TABLES | Table size | Module size | Instructions per blob byte | lite_init on the 13 KB blob | Slices |', '| --- | --- | --- | --- | --- | --- |',
   ...crcRows.map((r) => `| ${r.tables}${r.tables === 1 ? ' (default)' : ''} | ${fmt(r.tableBytes)} bytes | ${fmt(r.moduleBytes)} bytes | ${r.perByte.toFixed(1)} | ${fmt(r.instructions)} | ${fmt(r.slices)} |`)].join('\n');
 
@@ -160,6 +178,9 @@ const geoEcl = await measure(benchWasm, eclPath, [
   [`occulted 10 399 301 ${toHex(tLunar)}`, 'lite_occulted, Sun by Earth from the Moon (full)', 'occulted'],
   [`occulted 399 10 301 ${toHex(tLunar)}`, 'lite_occulted, Earth by the Sun from the Moon (the Sun is behind)', 'occulted'],
   [`occulted 10 399 301 ${toHex(tE)}`, 'lite_occulted, Sun by Earth from the Moon, far apart in the sky (none)', 'occulted'],
+  [`occcorr 10 399 301 ${toHex(tLunar)} 1`, 'lite_occulted_corr with light time, Sun by Earth from the Moon (full)', 'occultedLt'],
+  [`occcorr 399 301 10 ${toHex(tSolar)} 1`, 'lite_occulted_corr with light time, Earth by the Moon from the Sun (partial)', 'occultedLt'],
+  [`occcorr 10 399 301 ${toHex(tE)} 1`, 'lite_occulted_corr with light time, Sun by Earth from the Moon, far apart in the sky (none)', 'occultedLt'],
   [horizonSite(399, EARTH, 10, -dip - 0.006, 0.002), 'lite_set_state', null],
   [`occulted 10 399 -900 ${toHex(tE)}`, 'lite_occulted, Sun by Earth from 2 m above its surface, Sun below the horizon (full)', 'occulted'],
   [horizonSite(399, EARTH, 10, -dip + 0.0045, 0.002), 'lite_set_state', null],
@@ -173,6 +194,8 @@ const geoSoi = await measure(benchWasm, resolve(root, 'test/blobs/saturn-soi.slb
   [`occulted 10 699 -82 ${toHex(tSoi)}`, 'lite_occulted, Sun by Saturn from Cassini (full)', 'occulted'],
   [`occulted 399 699 -82 ${toHex(tSoi)}`, 'lite_occulted, Earth by Saturn from Cassini (two ellipsoids, full)', 'occulted'],
   [`occulted 10 699 -82 ${toHex(tSoi - 6 * 3600)}`, 'lite_occulted, Sun by Saturn from Cassini, six hours earlier (none)', 'occulted'],
+  [`occcorr 10 699 -82 ${toHex(tSoi)} 1`, 'lite_occulted_corr with light time, Sun by Saturn from Cassini (full)', 'occultedLt'],
+  [`occcorr 399 699 -82 ${toHex(tSoi)} 1`, 'lite_occulted_corr with light time, Earth by Saturn from Cassini (two ellipsoids, full)', 'occultedLt'],
 ], 'geometry-soi');
 // The costliest path needs two oriented ellipsoids and the search at once, which
 // no pair in the test blobs gives: the Moon is round. So a copy of the eclipses
@@ -197,15 +220,16 @@ const geoOblate = await measure(benchWasm, oblatePath, [
   ['init 1', 'lite_init, checksum skipped', null],
   [horizonSite(399, EARTH, 301, -dip + 0.0052, 0.002), 'lite_set_state', null],
   [`occulted 301 399 -900 ${toHex(tE)}`, 'lite_occulted, a Moon with unequal radii by Earth from 2 m above its surface, just clear of the horizon (two ellipsoids, none, by the full search)', 'occulted'],
+  [`occcorr 301 399 -900 ${toHex(tE)} 1`, 'lite_occulted_corr with light time, the same place a moment on (two ellipsoids, by the search)', 'occultedLt'],
 ], 'geometry-oblate');
 const geometryRows = [...geoEcl.rows, ...geoSoi.rows, ...geoOblate.rows].filter((r) => /sub_point|occulted/.test(r.label));
 // Ceilings from SPEC.md for the two geometry calls, in instructions.
-const geometryBudgets = { subpoint: 8000, occulted: 18000 };
+const geometryBudgets = { subpoint: 8000, occulted: 18000, occultedLt: 25000 };
 for (const r of geometryRows) if (r.instructions > geometryBudgets[r.budget]) failures.push(`${r.label}: ${r.instructions} instructions, ceiling ${geometryBudgets[r.budget]}`);
 
-const result = { spacewasm: '0.8.0-rc.3', full, flight, pageUse, crc: crcRows, budgets, geometry: geometryRows, geometryBudgets };
+const result = { spacewasm: '0.8.0-rc.3', full, flight, pageUse, crc: crcRows, checksums: sumRows, budgets, geometry: geometryRows, geometryBudgets };
 writeFileSync(resolve(root, 'build/cost.json'), JSON.stringify(result, null, 2) + '\n');
-const tables = { full: tableOf(full.rows), flight: tableOf(flight.rows), crc: crcTable, geometry: tableOf(geometryRows) };
+const tables = { full: tableOf(full.rows), flight: tableOf(flight.rows), crc: crcTable, checksum: sumTable, geometry: tableOf(geometryRows) };
 
 // 5. Time conversion against the number of TIME pieces. lite_host2et finds its
 // piece by binary search, so its cost follows the number of probes, which is at
@@ -282,6 +306,7 @@ console.log(tables.full + '\n');
 console.log(`one page: module data and stack end at byte ${fmt(pageUse.heapBase)}, the blob ends at ${fmt(pageUse.end)}, ${fmt(pageUse.free)} bytes free`);
 console.log(tables.flight + '\n');
 console.log(tables.crc + '\n');
+console.log(tables.checksum + '\n');
 console.log(tables.geometry);
 console.log('\n' + tables.time);
 if (process.argv.includes('--update-doc')) {

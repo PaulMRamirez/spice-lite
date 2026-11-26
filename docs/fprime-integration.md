@@ -22,6 +22,8 @@ With one change to F Prime (below), the module loads and runs to completion, and
 
 The slice counts differ by two or three because a host call ends the component's current run of fuel, and each decision makes three (time, event, sleep or command).
 
+The unit-test run was repeated on 26 November 2026 with the library as it stands after the additions listed under "Unreleased" in `CHANGELOG.md` (the module is then 32,570 bytes, not the 32,156 of the runs in this document), at the same F Prime commit and with the same one change. The component loaded the module, emitted the same 59 event texts as the stand-in harness, line for line, slept 58 times, sent the same command bytes at clock 49,200 s, and ended in `SequenceSucceeded`. The slice counts in the table were not counted again, and the Unix time variant and the two deployment runs below were not repeated.
+
 The same run was repeated with a blob whose TIME section was cut for Unix time (`{ "base": 2, "unix": true }`) and the clock given as Unix seconds under `TB_WORKSTATION_TIME`, which is what F Prime's stock time components report. It produced the same 59 event texts and commanded the image at the same instant.
 
 ## In a full deployment
@@ -69,7 +71,7 @@ So the chain holds end to end in a running F Prime application: a real clock, th
 
 `SEQUENCE_PAGE_SIZE=1 bash scripts/build-sequence.sh` links the same objects with `wasm-ld --page-size=1`: the memory is declared in pages of one byte (the custom page sizes proposal), sized to what the module uses and no more. This is how F Prime's own test modules are built. It is an optional second build, not the default: the result is not WebAssembly 1.0, so the strict checker does not pass it and CI does not build it, and it needs a `wasm-ld` from LLVM 20 or later (`WASM_LD=` names one; the run here used LLD 24 from the Emscripten SDK, with the objects still compiled by clang 18).
 
-What it changes, measured: the demonstration module declares 18,704 bytes of memory in place of 65,536. Under this repository's harness it executes the same 709,136 instructions and makes the same decisions. In F Prime's sequencer unit test, with the alignment constant as shipped, it loads and runs to `SequenceSucceeded` with `guestMemorySize` 18,704 or 20,480 and fails to load at 16,384. The module file is the same size to within a few bytes (32,158 here). The library itself is untouched; only the link step differs.
+What it changes, measured: the demonstration module declares 18,704 bytes of memory in place of 65,536. Under this repository's harness it executed the same 709,136 instructions as the standard build did at the time and made the same decisions (the library has grown since: `docs/sequence-demo.md` has the standard build's present figures, and of the runs in this document only the unit-test run has been repeated with it). In F Prime's sequencer unit test, with the alignment constant as shipped, it loads and runs to `SequenceSucceeded` with `guestMemorySize` 18,704 or 20,480 and fails to load at 16,384. The module file is the same size to within a few bytes (32,158 here). The library itself is untouched; only the link step differs.
 
 ## What remains unproven
 

@@ -2,6 +2,24 @@
 
 The blob format is "SLB1", draft 0.1 (`SPEC.md`). Tags are `vX.Y.Z` on `main`.
 
+## Unreleased
+
+Additions to the blob format, each behind a header flag bit that an 0.1.0 library refuses, so no blob is misread; a blob that uses none of them is what it was, except that a TIME piece the slicer derives now carries its measured error where zeros were.
+
+- TIME: each piece carries its own error bound (`max_err`); a piece may be a gap, which answers out of coverage and so gives a stretch of pieces an end (header flag bit 3; `refuseGaps` in the slicer); pieces may be selected by the F Prime time context as well as the time base, so a clock that was reset fits under one base (header flag bit 2; `context` in the slicer). `lite_fwtime2et` passes the context byte on. A time conversion costs 9 to 33 instructions more; the worst case is 454 of the 500 allowed.
+- Checksum: a blob may carry Fletcher-32 in place of CRC-32 (header flag bit 4; `"checksum": "fletcher32"`), verified by the same module at 6.8 instructions per byte against 20.8. `SPEC.md` says what it does not detect.
+
+Flight library:
+
+- `lite_occulted_corr`: occultation with a light-time correction, which is `occult_c` with `LT` and agrees with it within a microsecond on the test events. Light time moves the contacts of the Earth hiding the Sun from the Moon by 40 to 44 seconds.
+- Which of two bodies is in front is decided by a plane between them, exactly, where the tangent rule of 0.1.0 named the wrong body in up to one view in nine for bodies with axis ratios of five (`tools/front-rule-study.mjs`). No committed vector changed.
+- The module is 28,432 bytes (26,601 in 0.1.0).
+- The demonstration sequence built with this library was run again inside F Prime's WasmSequencer, in its unit-test harness: the same 59 events, command, and outcome as before.
+
+Slicer:
+
+- Two clock entries under one time base that cover the same readings are refused; they were accepted, and gave interleaved pieces.
+
 ## 0.1.0 (22 November 2026)
 
 Flight library (`src/spice_lite.c`, `include/spice_lite.h`), import-free C99, one 64 KiB page as strict WebAssembly 1.0:

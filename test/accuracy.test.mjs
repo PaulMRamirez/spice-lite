@@ -264,6 +264,6 @@ test('geodetic sites: up is the ellipsoid normal, as a header flag says, and mat
   const bad = structuredClone(base); bad.geodeticSites = true; bad.bodies.find((b) => b.id === 399).radiiFrom = undefined;
   await assert.rejects(slice(bad, kernelDir, resolve(root, 'test/blobs')), /geodetic sites need radii/);
   // A header flag bit this library does not know is still refused.
-  const unknown = Uint8Array.from(geo.blob); new DataView(unknown.buffer).setUint32(16, 7, true);
+  const unknown = Uint8Array.from(geo.blob); new DataView(unknown.buffer).setUint32(16, 0x80000003, true);
   assert.equal((await load(unknown, { skipCrc: true })).initStatus, 4);
 });

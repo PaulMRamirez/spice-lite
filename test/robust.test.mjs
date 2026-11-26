@@ -29,6 +29,106 @@ test('a single flipped bit anywhere is caught by the checksum', async () => {
   }
 });
 
+test('Fletcher-32: the other checksum a blob may carry, what it catches and what it does not', async () => {
+  const { fletcher32, crc32, setChecksum } = await import('../tools/slicer.mjs');
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  // The sum is the standard one: these are its published check values.
+  const text = (t) => new TextEncoder().encode(t);
+  assert.equal(fletcher32(text('abcde')), 0xf04fc729);
+  assert.equal(fletcher32(text('abcdef')), 0x56502d2a);
+  assert.equal(fletcher32(text('abcdefgh')), 0xebe19591);
+  // The committed blob with its checksum rewritten: one header bit and the
+  // four checksum bytes differ, and every answer is the same to the bit, in
+  // both builds.
+  const fl = setChecksum(blob.slice(), 'fletcher32');
+  const differs = [];
+  for (let i = 0; i < blob.length; i++) if (fl[i] !== blob[i]) differs.push(i);
+  assert.ok(differs.every((i) => (i >= 12 && i < 16) || i === 16), `bytes ${differs} differ`);
+  assert.equal(new DataView(fl.buffer).getUint32(16, true) & 16, 16);
+  const queries = readFileSync(resolve(root, 'test/vectors/cassini-soi.queries'), 'utf8');
+  const expected = readFileSync(resolve(root, 'test/vectors/cassini-soi.expected'), 'utf8');
+  const { runAll } = await import('./harness.mjs');
+  assert.equal(runAll(await load(fl), queries), expected);
+  if (existsSync(resolve(root, 'build/driver'))) {
+    mkdirSync(resolve(root, 'build'), { recursive: true });
+    const path = resolve(root, 'build/cassini-soi.fletcher.slb');
+    writeFileSync(path, fl);
+    assert.equal(execFileSync(resolve(root, 'build/driver'), ['run', path], { input: queries, encoding: 'utf8' }), expected);
+  }
+  // Back again gives the committed bytes.
+  assert.deepEqual(setChecksum(fl.slice(), 'crc32'), blob);
+  // The header bit says which sum the field holds, so each blob fails as the other.
+  const swap = (b) => { const c = b.slice(); c[16] ^= 16; return c; };
+  assert.equal((await load(swap(fl))).initStatus, 4, 'a Fletcher sum read as a CRC');
+  assert.equal((await load(swap(blob))).initStatus, 4, 'a CRC read as a Fletcher sum');
+  assert.equal((await load(swap(fl), { skipCrc: true })).initStatus, 0, 'with the check skipped the bit decides nothing');
+  // A single flipped bit anywhere is caught, as with the CRC: it moves one
+  // word by a power of two, which is never a multiple of 65535.
+  const rnd = prng(6);
+  for (let i = 0; i < 300; i++) {
+    const copy = fl.slice();
+    const pos = 16 + Math.floor(rnd() * (copy.length - 16));
+    copy[pos] ^= 1 << Math.floor(rnd() * 8);
+    assert.equal((await load(copy)).initStatus, 4, `flip at byte ${pos}`);
+  }
+  // So is any other change confined to one 16-bit word, except the one below.
+  for (let i = 0; i < 300; i++) {
+    const copy = fl.slice();
+    const pos = 16 + 2 * Math.floor(rnd() * ((copy.length - 16) / 2));
+    const v = new DataView(copy.buffer), was = v.getUint16(pos, true);
+    let now = was;
+    while (now === was || (now + was === 0xffff && now * was === 0)) now = Math.floor(rnd() * 65536);
+    v.setUint16(pos, now, true);
+    assert.equal((await load(copy)).initStatus, 4, `word at byte ${pos} from ${was} to ${now}`);
+  }
+  // What it does not catch: a word of all zeros that becomes all ones, or the
+  // reverse, because the two are the same number modulo 65535. The blob's
+  // padding is such words. The CRC catches the same change.
+  const v = new DataView(fl.buffer);
+  let zero = -1;
+  for (let i = fl.length - 2; i >= 64 && zero < 0; i -= 2) if (v.getUint16(i, true) === 0) zero = i;
+  assert.ok(zero > 0, 'the blob has a word of zeros');
+  const ones = fl.slice(); ones[zero] = 0xff; ones[zero + 1] = 0xff;
+  assert.equal((await load(ones)).initStatus, 0, 'zeros to ones passes the Fletcher sum');
+  const onesCrc = blob.slice(); onesCrc[zero] = 0xff; onesCrc[zero + 1] = 0xff;
+  assert.equal((await load(onesCrc)).initStatus, 4, 'and fails the CRC');
+  assert.notEqual(crc32(onesCrc.subarray(16)), crc32(blob.subarray(16)));
+  // Nor a matched pair of changes: one word raised and another lowered by the
+  // same amount leave the first sum alone, and move the second by that amount
+  // times the number of words between them, which is a multiple of 65535 when
+  // the amount is 257 and the words are 255 apart (65535 is 3 x 5 x 17 x 257).
+  // A CRC-32 has no two-bit or two-word blind spot of this kind at these sizes.
+  {
+    let at = -1;
+    for (let i = 64; i + 512 < fl.length && at < 0; i += 2) {
+      const x = v.getUint16(i, true), y = v.getUint16(i + 510, true);
+      if (x < 65535 - 257 && y >= 257 && y < 65535) at = i;
+    }
+    assert.ok(at > 0);
+    const pair = (b) => { const c = b.slice(), w = new DataView(c.buffer); w.setUint16(at, w.getUint16(at, true) + 257, true); w.setUint16(at + 510, w.getUint16(at + 510, true) - 257, true); return c; };
+    assert.equal((await load(pair(fl))).initStatus, 0, 'a matched pair of changes passes the Fletcher sum');
+    assert.equal((await load(pair(blob))).initStatus, 4, 'and fails the CRC');
+  }
+  // The largest sums a blob can produce: the blob padded to the 1 MiB limit
+  // with bytes of all ones, which no section refers to. The library keeps its
+  // sums in 32 bits and reduces them in blocks; this is where a block that was
+  // too long would overflow. Lengths that leave one, two, and three bytes
+  // after the last whole 32-bit word are tried too.
+  for (const length of [1 << 20, (1 << 20) - 1, (1 << 20) - 2, (1 << 20) - 3, blob.length + 713, blob.length + 5]) {
+    const big = new Uint8Array(length).fill(0xff);
+    big.set(blob);
+    new DataView(big.buffer).setUint32(8, length, true);
+    setChecksum(big, 'fletcher32');
+    assert.equal((await load(big)).initStatus, 0, `${length} bytes`);
+    big[length - 1] ^= 0x40;
+    assert.equal((await load(big)).initStatus, 4, `${length} bytes with a bit flipped in the last byte`);
+  }
+  // A blob of odd length is summed with its last byte as a low byte.
+  assert.equal(fletcher32(text('abc')), fletcher32(Uint8Array.from([97, 98, 99, 0])));
+  // Asking the slicer for a sum it does not know is refused.
+  assert.throws(() => setChecksum(blob.slice(), 'md5'), /neither "crc32" nor "fletcher32"/);
+});
+
 test('corrupted blobs never trap the WebAssembly build', async () => {
   const rnd = prng(11);
   const t = new DataView(blob.buffer).getFloat64(24, true) + 86400;
@@ -112,6 +212,36 @@ test('an unsorted TIME section is a bad blob, with a valid checksum', async () =
       assert.equal(api.host2et(3, 100, 0).status, 4, `${name}: ${what}: no conversion from a refused blob`);
     }
   }
+});
+
+test('TIME gaps, contexts, and error bounds: what lite_init requires of each', async () => {
+  const table = readTimeTable(drift).map(({ maxErr, ...t }) => ({ ...t, maxErr }));
+  const loads = async (t, opts) => (await load(withTimeTable(drift, t, opts))).initStatus;
+  // An error bound is a number at or above zero.
+  assert.equal(await loads(table.map((t, i) => (i === 2 ? { ...t, maxErr: 0 } : t))), 0);
+  for (const bad of [-1e-9, NaN, -Infinity]) assert.equal(await loads(table.map((t, i) => (i === 2 ? { ...t, maxErr: bad } : t))), 4, `an error bound of ${bad}`);
+  // A gap needs header flag bit 3, and with it a gap is a piece like any
+  // other in the order: it may not start where another piece of its base does.
+  const gap = { base: table[0].base, hostStart: table[1].hostStart - 1, etStart: 0, rate: 0, gap: true };
+  const gapped = [table[0], gap, ...table.slice(1)];
+  assert.equal(await loads(gapped), 0);
+  assert.equal(await loads(gapped, { headerFlags: 1 }), 4, 'a gap the header does not announce');
+  assert.equal(await loads(table, { headerFlags: 1 | 8 }), 0, 'the bit with no gap in the table is harmless');
+  assert.equal(await loads([table[0], { ...gap, hostStart: table[1].hostStart }, ...table.slice(1)]), 4, 'a gap that starts with another piece');
+  const api = await load(withTimeTable(drift, gapped));
+  const at = (h) => api.host2et(gap.base, Math.floor(h), Math.round((h - Math.floor(h)) * 1e6)).status;
+  assert.deepEqual([at(gap.hostStart - 1e-6 > table[0].hostStart ? gap.hostStart - 1 : table[0].hostStart), at(gap.hostStart), at(table[1].hostStart - 0.5), at(table[1].hostStart)], [0, 1, 1, 0]);
+  // With header flag bit 2 the order is by context first, then base, then
+  // start; the same entries are out of order when read without it, or when a
+  // lower context follows a higher one.
+  const two = [...table.map((t) => ({ ...t, context: 1 })), ...table.map((t) => ({ ...t, context: 2 }))];
+  assert.equal(await loads(two), 0);
+  assert.equal(await loads(two, { headerFlags: 1 }), 4, 'two contexts read as one base repeat their starts');
+  assert.equal(await loads([...two.slice(table.length), ...two.slice(0, table.length)]), 4, 'context 2 before context 1');
+  // Without the bit the context byte is not looked at, so any value loads.
+  assert.equal(await loads(table.map((t) => ({ ...t, context: 9 })), { headerFlags: 1 }), 0);
+  // Header flag bits beyond the five in use are still refused.
+  assert.equal(await loads(table, { headerFlags: 1 | 32 }), 4);
 });
 
 test('overlapping TIME pieces (two of one base starting together) are a bad blob', async () => {
