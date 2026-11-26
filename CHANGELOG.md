@@ -14,6 +14,7 @@ Flight library:
 - `lite_occulted_corr`: occultation with a light-time correction, which is `occult_c` with `LT` and agrees with it within a microsecond on the test events. Light time moves the contacts of the Earth hiding the Sun from the Moon by 40 to 44 seconds.
 - Which of two bodies is in front is decided by a plane between them, exactly, where the tangent rule of 0.1.0 named the wrong body in up to one view in nine for bodies with axis ratios of five (`tools/front-rule-study.mjs`). No committed vector changed.
 - The module is 28,432 bytes (26,601 in 0.1.0).
+- The demonstration sequence built with this library was run again inside F Prime's WasmSequencer, in its unit-test harness: the same 59 events, command, and outcome as before.
 
 Slicer:
 
