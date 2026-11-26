@@ -1,5 +1,7 @@
 # Running inside F Prime's WasmSequencer
 
+[Documentation index](README.md) · Previous: [Building it into a sequence](building.md) · Related: [A sequence, end to end](sequence-demo.md)
+
 The demonstration sequence (`examples/sequence/sun_watch.c`, `docs/sequence-demo.md`) had only ever run under this repository's own harness, with stand-ins for the sequencer's host calls. This note records the first run inside the real thing: F Prime's `Svc/WasmSequencer` component, built from F Prime's sources, with its own host calls, its own serialization of time, and its own state machines.
 
 Three runs were made, on Linux x86-64, at F Prime commit `633c89d` (`devel`, 19 November 2026), which pins the `spacewasm` interpreter at 0.7.1. In the first the component was driven by its unit-test harness: the harness supplies the clock and answers the command, and everything between (loading the module, running it in slices of fuel, the `time`, `event`, `rsleep`, `cmd`, and `exit` host calls, the timer wake) is the component's flight code. The second and third were a full deployment: F Prime's reference application with its real time source, rate groups, command dispatcher, and event logger, commanded through F Prime's ground system ("In a full deployment", below). None was on a flight processor.

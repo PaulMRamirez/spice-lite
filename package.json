@@ -15,6 +15,7 @@
     "slice": "node tools/slicer.mjs test/blobs/cassini-soi.json test/blobs/cassini-soi.slb test/blobs/cassini-soi.report.json && node tools/slicer.mjs test/blobs/sun-earth-moon.json test/blobs/sun-earth-moon.slb test/blobs/sun-earth-moon.report.json && node tools/slicer.mjs test/blobs/sclk-drift.json test/blobs/sclk-drift.slb test/blobs/sclk-drift.report.json && node tools/slicer.mjs test/blobs/sclk-many.json test/blobs/sclk-many.slb test/blobs/sclk-many.report.json",
     "slice:orbiter": "node tools/slicer.mjs test/blobs/orbiter.json test/blobs/orbiter.slb test/blobs/orbiter.report.json && node tools/make-vectors-orbiter.mjs",
     "slice:geometry": "node tools/slicer.mjs test/blobs/eclipses.json test/blobs/eclipses.slb test/blobs/eclipses.report.json && node tools/slicer.mjs test/blobs/saturn-soi.json test/blobs/saturn-soi.slb test/blobs/saturn-soi.report.json",
+    "tour": "mkdir -p build && ${NATIVE_CC:-cc} -std=c99 -O2 -ffp-contract=off -Iinclude -o build/tour examples/native/tour.c src/spice_lite.c -lm && build/tour test/blobs/cassini-soi.slb test/blobs/saturn-soi.slb",
     "test": "node --test test/*.test.mjs",
     "cost": "node scripts/measure-cost.mjs",
     "cost:orbit": "node scripts/measure-cost-orbit.mjs",

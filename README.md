@@ -4,6 +4,19 @@ A small, import-free C library that answers spacecraft geometry questions onboar
 
 This is an independent, personal open-source project at draft 0.1. It is not a product of, and is not endorsed by, NAIF, NASA, JPL, or Caltech, and it has not flown. Treat it as a design under test, not as flight software.
 
+## Documentation
+
+| If you want to... | Read |
+| --- | --- |
+| Go from a clone to your own blob running in a sequence | [Getting started](docs/getting-started.md) |
+| Write a slicer configuration for your bodies, sites, clock, and spacecraft | [Cutting a blob](docs/slicer.md) |
+| Know which call answers a question, and what to do with each status | [Calling the library](docs/api.md) |
+| Compile and link the library with your own sequence | [Building it into a sequence](docs/building.md) |
+| Run under F Prime's WasmSequencer | [Running inside F Prime](docs/fprime-integration.md) |
+| Find anything else, by task | [Documentation index](docs/README.md) |
+
+`pnpm tour` builds and runs [`examples/native/tour.c`](examples/native/tour.c), which makes every call of the library once against the committed test blobs. It needs only a C compiler.
+
 ## What it does
 
 A ground tool (the slicer) reads full SPICE kernels, cuts a mission window, and writes a blob of fixed-width tables with measured error bounds. Onboard, a sequence links this library, points it at the blob, and asks questions:
@@ -32,17 +45,17 @@ Under the SpaceWasm interpreter a geometric state costs about 1,500 to 2,000 ins
 
 ## Layout
 
-`include/spice_lite.h` and `src/spice_lite.c` are the whole flight library. `tools/slicer.mjs` is the reference slicer (with `tools/find-breaks.mjs`, which finds the burns and seams no record should span) and `tools/make-vectors.mjs` regenerates the exactness vectors. `tools/real-kernels.mjs` and `tools/real-orbit-study.mjs` measure the orbit segment and the clock mapping on real mission kernels, which are fetched on demand and never committed (`docs/real-kernels.md`). `test/` holds the WebAssembly harness, the native driver, six test blobs with their configurations and reports (a large one with a spacecraft trajectory and a small flight-shaped one), and the test tiers. `scripts/` holds the two build scripts, the strict Wasm 1.0 checker, and the cost measurement, whose SpaceWasm host harness is in `bench/spacewasm-host`.
+`include/spice_lite.h` and `src/spice_lite.c` are the whole flight library. `tools/slicer.mjs` is the reference slicer (with `tools/find-breaks.mjs`, which finds the burns and seams no record should span, and `tools/blob-to-c.mjs`, which writes a blob as a C array for a sequence to carry) and `tools/make-vectors.mjs` regenerates the exactness vectors. `tools/real-kernels.mjs` and `tools/real-orbit-study.mjs` measure the orbit segment and the clock mapping on real mission kernels, which are fetched on demand and never committed (`docs/real-kernels.md`). `test/` holds the WebAssembly harness, the native driver, six test blobs with their configurations and reports (a large one with a spacecraft trajectory and a small flight-shaped one), and the test tiers. `examples/` holds a desktop tour of every call, the configuration the getting-started guide cuts, the demonstration sequence, and the F Prime test. `scripts/` holds the build scripts, the strict Wasm 1.0 checker, and the cost measurement, whose SpaceWasm host harness is in `bench/spacewasm-host`.
 
 ## Building and testing
 
 `bash scripts/build-wasm.sh` needs clang and wasm-ld with the WebAssembly backend. `bash scripts/build-native.sh` needs a C compiler with the sanitizer runtimes (set `NATIVE_CC`). `pnpm install` then `pnpm verify` builds both and runs the tests under Node 22.
 
-The accuracy tier and the slicer need four public kernels (`naif0012.tls`, `pck00011.tpc`, a DE440 subset, and a Cassini trajectory), which are not committed here. They are the test fixtures of the cspice-wasm repository; point `SPICE_LITE_KERNELS` at that directory. Without it the accuracy tests are skipped and say so. `pnpm slice` rebuilds the test blob, and CI checks that the committed blob and vectors are reproducible.
+The accuracy tier and the slicer need four public kernels (`naif0012.tls`, `pck00011.tpc`, a DE440 subset, and a Cassini trajectory), which are not committed here. They are the test fixtures of the cspice-wasm repository; point `SPICE_LITE_KERNELS` at that directory. Without it the accuracy tests are skipped and say so. [Getting started](docs/getting-started.md#3-get-the-kernels) has the two commands that fetch them. `pnpm slice` rebuilds the test blob, and CI checks that the committed blob and vectors are reproducible.
 
 ## Using it in a sequence
 
-Compile `src/spice_lite.c` with your sequence, with floating-point contraction off (`-ffp-contract=off`) so results stay bit-identical across hosts. Place the blob in the module's data section, 8-byte aligned, and call `lite_init` once. One blob is active at a time. Raise the sequencer's guest memory to hold the blob; the F Prime default of 8,192 bytes is too small.
+Compile `src/spice_lite.c` with your sequence, with floating-point contraction off (`-ffp-contract=off`) so results stay bit-identical across hosts. Place the blob in the module's data section, 8-byte aligned, and call `lite_init` once. One blob is active at a time. Raise the sequencer's guest memory to hold the blob; the F Prime default of 8,192 bytes is too small. [Building it into a sequence](docs/building.md) has the commands, each option's purpose, and the memory budget; [Calling the library](docs/api.md) has each call with code.
 
 ## License
 
