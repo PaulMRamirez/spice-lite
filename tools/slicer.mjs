@@ -21,7 +21,7 @@ import { sclkTimePieces, unixTimePieces } from './sclk-time.mjs';
 import { sliceOrbit } from './orbit-model.mjs';
 import { findBreaks, endingBefore } from './find-breaks.mjs';
 
-export const SLICER_VERSION = '0.1.0';
+export const SLICER_VERSION = '0.2.0';
 
 // ---- Chebyshev helpers (the same recurrences the flight library uses) -------
 
