@@ -1,6 +1,6 @@
 {
   "name": "spice-lite",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A small, import-free C library that answers spacecraft geometry questions onboard from a compact ephemeris blob; built for WebAssembly sequencers.",
   "type": "module",

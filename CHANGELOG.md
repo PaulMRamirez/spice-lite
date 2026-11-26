@@ -2,7 +2,7 @@
 
 The blob format is "SLB1", draft 0.1 (`SPEC.md`). Tags are `vX.Y.Z` on `main`.
 
-## Unreleased
+## 0.2.0 (26 November 2026)
 
 Additions to the blob format, each behind a header flag bit that an 0.1.0 library refuses, so no blob is misread; a blob that uses none of them is what it was, except that a TIME piece the slicer derives now carries its measured error where zeros were.
 
